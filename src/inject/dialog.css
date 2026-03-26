@@ -1,0 +1,42 @@
+/* Web Element Picker - 动画与滚动条样式 */
+
+@keyframes __dialogFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes __dialogFadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+@keyframes __dialogSlideUp {
+    from { opacity: 0; transform: translateY(20px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes __dialogShake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-6px); }
+    40% { transform: translateX(6px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+}
+
+/* 自定义滚动条 */
+#__dialog-box::-webkit-scrollbar {
+    width: 6px;
+}
+
+#__dialog-box::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#__dialog-box::-webkit-scrollbar-thumb {
+    background: #45475a;
+    border-radius: 3px;
+}
+
+#__dialog-box::-webkit-scrollbar-thumb:hover {
+    background: #585b70;
+}
