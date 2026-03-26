@@ -11,6 +11,7 @@
   "activationEvents": [
     "onCommand:webPicker.startProxy",
     "onCommand:webPicker.stopProxy",
+    "onCommand:webPicker.undo",
     "onCommand:webPicker.debugChat"
   ],
   "main": "./out/extension.js",
@@ -23,6 +24,10 @@
       {
         "command": "webPicker.stopProxy",
         "title": "Web Picker: Stop Proxy"
+      },
+      {
+        "command": "webPicker.undo",
+        "title": "Web Picker: Undo Last Modification"
       },
       {
         "command": "webPicker.debugChat",

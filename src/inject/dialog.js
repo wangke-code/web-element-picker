@@ -313,6 +313,8 @@
                 outerHTML: currentElementInfo.outerHTML,
                 computedStyles: currentElementInfo.computedStyles,
                 description: description,
+                directText: currentElementInfo.directText || '',
+                childSummary: currentElementInfo.childSummary || '',
                 referenceImage: imageBase64,
                 elementScreenshot: currentElementInfo.elementScreenshot || null,
                 pageUrl: currentElementInfo.pageUrl
@@ -332,8 +334,12 @@
                 });
                 const result = await resp.json();
                 if (result.success) {
-                    showToast('✅ 已发送到 VS Code Chat！');
                     closeDialog();
+                    showWaitingToast();
+                    // 显示撤销按钮
+                    if (window.__webPickerShowUndo) {
+                        window.__webPickerShowUndo();
+                    }
                 } else {
                     showToast('❌ 发送失败，请重试');
                     resetBtn(btn);
@@ -387,5 +393,30 @@
             toast.style.transition = 'opacity 0.3s';
             setTimeout(() => toast.remove(), 300);
         }, 3000);
+    }
+
+    function showWaitingToast() {
+        const toast = document.createElement('div');
+        toast.id = '__picker-waiting-toast';
+        toast.style.cssText = `
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white; padding: 14px 28px; border-radius: 12px;
+            font-size: 14px; font-family: 'Segoe UI', system-ui, sans-serif;
+            z-index: 2147483647;
+            box-shadow: 0 4px 24px rgba(99,102,241,0.4);
+            animation: __dialogSlideUp 0.3s ease;
+            display: flex; align-items: center; gap: 10px;
+        `;
+        toast.innerHTML = '<span style="display:inline-block;animation:__pickerSpin 1s linear infinite;">⏳</span> 已发送到 AI Chat，等待修改完成...';
+        document.body.appendChild(toast);
+
+        // 添加旋转动画
+        if (!document.getElementById('__picker-spin-style')) {
+            const style = document.createElement('style');
+            style.id = '__picker-spin-style';
+            style.textContent = '@keyframes __pickerSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
+            document.head.appendChild(style);
+        }
     }
 })();

@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { ProxyServer } from './server';
 
 let server: ProxyServer | undefined;
+let fileWatcher: vscode.FileSystemWatcher | undefined;
+let pendingModify = false; // 只在发送修改请求后才监听文件变更
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Web Element Picker extension activated');
@@ -39,7 +41,13 @@ export function activate(context: vscode.ExtensionContext) {
 
             // 监听修改请求
             server.onModifyRequest((data) => {
+                pendingModify = true;
                 handleModifyRequest(data);
+            });
+
+            // 监听撤销请求（从浏览器按钮）
+            server.onUndoRequest(() => {
+                handleUndoRequest();
             });
 
             try {
@@ -48,6 +56,25 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage(
                     `🎯 Web Picker 代理已启动: ${proxyUrl} → ${targetUrl}`
                 );
+
+                // 监听工作区文件变更，只在 pendingModify 时触发刷新
+                if (fileWatcher) {
+                    fileWatcher.dispose();
+                }
+                fileWatcher = vscode.workspace.createFileSystemWatcher('**/*');
+                let debounceTimer: NodeJS.Timeout | undefined;
+                const onFileChange = () => {
+                    if (!pendingModify || !server) { return; }
+                    // 防抖：AI 可能连续改多个文件，等 2 秒稳定后再刷新
+                    if (debounceTimer) { clearTimeout(debounceTimer); }
+                    debounceTimer = setTimeout(() => {
+                        pendingModify = false;
+                        server?.broadcastReload();
+                    }, 2000);
+                };
+                fileWatcher.onDidChange(onFileChange);
+                fileWatcher.onDidCreate(onFileChange);
+                context.subscriptions.push(fileWatcher);
 
                 // 自动打开浏览器
                 try {
@@ -115,7 +142,51 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    context.subscriptions.push(startCmd, stopCmd, debugCmd);
+    // ========== 撤销上一次修改 ==========
+    const undoCmd = vscode.commands.registerCommand(
+        'webPicker.undo',
+        async () => {
+            const prompt = '请撤销你上一次对前端元素的修改，恢复到修改前的状态。';
+            let sent = false;
+            try {
+                await vscode.commands.executeCommand(
+                    'antigravity.sendPromptToAgentPanel',
+                    prompt
+                );
+                sent = true;
+                vscode.window.showInformationMessage('✅ 撤销请求已发送');
+            } catch (e) {
+                console.log('undo sendPromptToAgentPanel failed:', e);
+            }
+            if (!sent) {
+                await vscode.env.clipboard.writeText(prompt);
+                try {
+                    await vscode.commands.executeCommand('antigravity.agentSidePanel.focus');
+                } catch { /* ignore */ }
+                vscode.window.showWarningMessage('撤销请求已复制到剪贴板，请在 Chat 中粘贴');
+            }
+        }
+    );
+
+    context.subscriptions.push(startCmd, stopCmd, undoCmd, debugCmd);
+}
+
+// ========== 处理撤销请求 ==========
+async function handleUndoRequest() {
+    const prompt = '请撤销你上一次对前端元素的修改，恢复到修改前的状态。';
+    try {
+        await vscode.commands.executeCommand(
+            'antigravity.sendPromptToAgentPanel',
+            prompt
+        );
+        vscode.window.showInformationMessage('✅ 撤销请求已发送');
+    } catch (e) {
+        await vscode.env.clipboard.writeText(prompt);
+        try {
+            await vscode.commands.executeCommand('antigravity.agentSidePanel.focus');
+        } catch { /* ignore */ }
+        vscode.window.showWarningMessage('撤销请求已复制到剪贴板，请在 Chat 中粘贴');
+    }
 }
 
 // ========== 处理修改请求 ==========
@@ -124,21 +195,35 @@ async function handleModifyRequest(data: {
     outerHTML: string;
     computedStyles: string;
     description: string;
+    directText?: string;
+    childSummary?: string;
     referenceImage?: string;
     elementScreenshot?: string;
     pageUrl: string;
 }) {
     // 构造 prompt
-    let prompt = `请修改以下前端元素：\n\n`;
-    prompt += `**页面 URL**: ${data.pageUrl}\n`;
-    prompt += `**CSS 选择器**: \`${data.selector}\`\n\n`;
-    prompt += `**当前 HTML**:\n\`\`\`html\n${data.outerHTML}\n\`\`\`\n\n`;
+    let prompt = `请修改以下前端元素。\n\n`;
+    prompt += `## 目标定位\n`;
+    prompt += `- **页面 URL**: ${data.pageUrl}\n`;
+    prompt += `- **CSS 选择器**: \`${data.selector}\`\n`;
 
-    if (data.computedStyles) {
-        prompt += `**关键样式**:\n\`\`\`css\n${data.computedStyles}\n\`\`\`\n\n`;
+    if (data.directText) {
+        prompt += `- **元素文本内容**: "${data.directText}"\n`;
     }
 
-    prompt += `**修改要求**: ${data.description}\n`;
+    prompt += `\n## 元素当前状态\n`;
+    prompt += `**HTML 结构**:\n\`\`\`html\n${data.outerHTML}\n\`\`\`\n\n`;
+
+    if (data.computedStyles) {
+        prompt += `**计算样式**:\n\`\`\`css\n${data.computedStyles}\n\`\`\`\n\n`;
+    }
+
+    prompt += `## 修改要求\n${data.description}\n`;
+    prompt += `\n## 重要规则\n`;
+    prompt += `1. 只修改上述 CSS 选择器精确匹配的那个元素\n`;
+    prompt += `2. 不要修改其父元素或兄弟元素\n`;
+    prompt += `3. 除非修改要求明确提到子元素，否则不要改动子元素\n`;
+    prompt += `4. 在源代码文件中找到对应的组件/模板进行修改，不要用内联样式覆盖\n`;
 
     if (data.referenceImage) {
         prompt += `\n[用户提供了参考图片]\n`;
@@ -202,6 +287,9 @@ async function handleModifyRequest(data: {
 }
 
 export function deactivate() {
+    if (fileWatcher) {
+        fileWatcher.dispose();
+    }
     if (server) {
         server.stop();
     }
