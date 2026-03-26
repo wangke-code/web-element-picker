@@ -371,12 +371,13 @@
         toolbar.innerHTML = `
             <div style="display:flex;align-items:center;gap:12px;">
                 <span style="font-size:14px;font-weight:600;color:#cba6f7;">🎨 可视化编辑</span>
-                <span style="font-size:11px;color:#6c7086;">点击选中 · 拖拽移动 · 拖角缩放 · 双击编辑文字</span>
+                <span style="font-size:11px;color:#6c7086;">点击选中 · 拖拽移动 · 8向缩放 · 双击改文字 · 右侧面板改颜色/字号/圆角/透明度</span>
             </div>
-            <div style="display:flex;gap:8px;">
-                <button id="__ve-reset" style="padding:6px 14px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:8px;cursor:pointer;font-size:12px;">重置</button>
-                <button id="__ve-cancel" style="padding:6px 14px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:8px;cursor:pointer;font-size:12px;">取消</button>
-                <button id="__ve-confirm" style="padding:6px 14px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;">确认修改 →</button>
+            <div style="display:flex;gap:6px;">
+                <button id="__ve-delete" style="padding:5px 10px;border:1px solid #f38ba8;background:transparent;color:#f38ba8;border-radius:6px;cursor:pointer;font-size:11px;opacity:0.4;pointer-events:none;" title="删除选中元素">🗑️</button>
+                <button id="__ve-reset" style="padding:5px 10px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:6px;cursor:pointer;font-size:11px;">重置</button>
+                <button id="__ve-cancel" style="padding:5px 10px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:6px;cursor:pointer;font-size:11px;">取消</button>
+                <button id="__ve-confirm" style="padding:5px 10px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;">确认修改 →</button>
             </div>
         `;
         editor.appendChild(toolbar);
@@ -617,7 +618,6 @@
             // 清除上一个选中态
             editableItems.forEach((item, i) => {
                 item.wrapper.style.outline = i === idx ? '2px solid #6366f1' : '1px dashed rgba(99,102,241,0.25)';
-                // 显示/隐藏 8 方向手柄
                 const handles = item.wrapper.querySelectorAll('.__ve-handle');
                 handles.forEach(h => h.style.opacity = i === idx ? '1' : '0');
                 const sl = item.wrapper.querySelector('.__ve-size-label');
@@ -625,6 +625,12 @@
             });
             selectedIdx = idx;
             updatePropsPanel(idx);
+            // 删除按钮状态
+            const delBtn = document.getElementById('__ve-delete');
+            if (delBtn) {
+                delBtn.style.opacity = idx >= 0 ? '1' : '0.4';
+                delBtn.style.pointerEvents = idx >= 0 ? 'auto' : 'none';
+            }
         }
 
         // 为每个子元素创建可编辑的克隆
@@ -893,6 +899,15 @@
         // 按钮事件
         document.getElementById('__ve-cancel').addEventListener('click', () => editor.remove());
 
+        // 删除选中元素
+        document.getElementById('__ve-delete').addEventListener('click', () => {
+            if (selectedIdx < 0 || selectedIdx >= editableItems.length) return;
+            const item = editableItems[selectedIdx];
+            item.wrapper.style.display = 'none';
+            item.deleted = true;
+            selectItem(-1);
+        });
+
         document.getElementById('__ve-reset').addEventListener('click', () => {
             editableItems.forEach((item) => {
                 const s = item.original;
@@ -901,12 +916,14 @@
                 item.wrapper.style.width = s.width + 'px';
                 item.wrapper.style.height = s.height + 'px';
                 item.wrapper.style.opacity = s.opacity;
+                item.wrapper.style.display = ''; // 恢复删除的元素
                 item.textChanged = null;
                 item.currentBg = null;
                 item.currentColor = null;
                 item.currentFontSize = null;
                 item.currentBorderRadius = undefined;
                 item.currentOpacity = undefined;
+                item.deleted = false;
                 // 重置克隆元素样式
                 const cloneEl = item.wrapper.children[0];
                 if (cloneEl) {
@@ -925,6 +942,19 @@
             const changes = [];
             editableItems.forEach((item) => {
                 const orig = item.original;
+
+                // 删除的元素
+                if (item.deleted) {
+                    changes.push({
+                        selector: orig.selector,
+                        classNames: orig.classNames,
+                        text: orig.text,
+                        changes: ['删除此元素'],
+                        deleted: true
+                    });
+                    return;
+                }
+
                 const newLeft = parseFloat(item.wrapper.style.left);
                 const newTop = parseFloat(item.wrapper.style.top);
                 const newW = parseFloat(item.wrapper.style.width);
