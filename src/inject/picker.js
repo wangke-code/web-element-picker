@@ -14,6 +14,18 @@
     let overlayBox = null;
     let currentDepthElement = null; // 用于 Shift+Click 父级上移
 
+    // ========== 批量修改队列 ==========
+    const batchQueue = [];
+
+    window.__webPickerBatch = {
+        add: function(item) {
+            batchQueue.push(item);
+            updateBatchPanel();
+        },
+        getQueue: function() { return batchQueue; },
+        clear: function() { batchQueue.length = 0; updateBatchPanel(); }
+    };
+
     // ========== 创建浮动按钮 ==========
     const fab = document.createElement('div');
     fab.id = '__picker-fab';
@@ -119,6 +131,111 @@
         undoBtn.style.display = 'flex';
         try { sessionStorage.setItem('__picker_show_undo', 'true'); } catch(e) {}
     };
+
+    // ========== 批量队列浮动面板 ==========
+    const batchPanel = document.createElement('div');
+    batchPanel.id = '__picker-batch-panel';
+    batchPanel.style.cssText = `
+        position: fixed; bottom: 24px; left: 24px;
+        width: 320px; max-height: 400px;
+        background: rgba(30,30,46,0.95); backdrop-filter: blur(12px);
+        border-radius: 12px; overflow: hidden;
+        box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+        color: #cdd6f4; font-family: 'Segoe UI', system-ui, sans-serif;
+        z-index: 2147483640; border: 1px solid rgba(99,102,241,0.3);
+        display: none; flex-direction: column;
+    `;
+    batchPanel.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(49,50,68,0.8);border-bottom:1px solid #45475a;">
+            <span style="font-size:13px;font-weight:600;color:#cba6f7;">📋 修改队列 <span id="__batch-count" style="color:#6c7086;font-weight:400;">(0)</span></span>
+            <div style="display:flex;gap:4px;">
+                <button id="__batch-clear" style="padding:3px 8px;border:1px solid #45475a;background:transparent;color:#6c7086;border-radius:4px;cursor:pointer;font-size:10px;">清空</button>
+                <button id="__batch-send" style="padding:3px 10px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600;">一起发送 →</button>
+            </div>
+        </div>
+        <div id="__batch-list" style="overflow-y:auto;max-height:300px;padding:8px;"></div>
+    `;
+    document.body.appendChild(batchPanel);
+
+    document.getElementById('__batch-clear').addEventListener('click', () => {
+        batchQueue.length = 0;
+        updateBatchPanel();
+    });
+    document.getElementById('__batch-send').addEventListener('click', async () => {
+        if (batchQueue.length === 0) return;
+        // 合并所有队列项为一个 payload
+        const merged = {
+            selector: batchQueue.map(q => q.selector).join(', '),
+            outerHTML: batchQueue.map(q => q.outerHTML).join('\n---\n'),
+            computedStyles: '',
+            description: batchQueue.map((q, i) => `### 修改 ${i + 1}\n**元素**: \`${q.classNames || q.selector}\`\n${q.description}`).join('\n\n'),
+            directText: '',
+            childSummary: '',
+            classNames: batchQueue.map(q => q.classNames).filter(Boolean).join(' | '),
+            ancestorChain: batchQueue[0].ancestorChain || '',
+            frameworkInfo: batchQueue[0].frameworkInfo || null,
+            identifiers: null,
+            referenceImage: null,
+            elementScreenshot: null,
+            pageUrl: batchQueue[0].pageUrl || window.location.href,
+            visualChanges: null,
+            batchMode: true,
+            batchCount: batchQueue.length
+        };
+        try {
+            const resp = await fetch('/api/modify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(merged)
+            });
+            const result = await resp.json();
+            if (result.success) {
+                batchQueue.length = 0;
+                updateBatchPanel();
+                if (window.__webPickerShowUndo) window.__webPickerShowUndo();
+                // 显示等待提示
+                const toast = document.createElement('div');
+                toast.id = '__picker-waiting-toast';
+                toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;padding:14px 28px;border-radius:12px;font-size:14px;z-index:2147483647;box-shadow:0 4px 24px rgba(99,102,241,0.4);display:flex;align-items:center;gap:10px;font-family:system-ui,sans-serif;';
+                toast.innerHTML = '<span style="display:inline-block;animation:__pickerSpin 1s linear infinite;">⏳</span> 已发送 ' + merged.batchCount + ' 个修改到 AI Chat...';
+                document.body.appendChild(toast);
+            }
+        } catch (err) {
+            alert('发送失败: ' + err.message);
+        }
+    });
+
+    function updateBatchPanel() {
+        const count = batchQueue.length;
+        const countEl = document.getElementById('__batch-count');
+        if (countEl) countEl.textContent = `(${count})`;
+        batchPanel.style.display = count > 0 ? 'flex' : 'none';
+        const list = document.getElementById('__batch-list');
+        if (!list) return;
+        list.innerHTML = '';
+        batchQueue.forEach((item, i) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:4px;background:#181825;border-radius:6px;font-size:11px;';
+            const desc = (item.description || '').substring(0, 40);
+            const selector = (item.classNames || item.selector || '').substring(0, 30);
+            row.innerHTML = `
+                <span style="color:#6c7086;min-width:16px;">${i + 1}</span>
+                <div style="flex:1;overflow:hidden;">
+                    <div style="color:#89b4fa;font-family:monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${selector}</div>
+                    <div style="color:#a6adc8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${desc}</div>
+                </div>
+                <button data-idx="${i}" class="__batch-remove" style="background:none;border:none;color:#f38ba8;cursor:pointer;font-size:14px;padding:0 4px;">✕</button>
+            `;
+            list.appendChild(row);
+        });
+        list.querySelectorAll('.__batch-remove').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const idx = parseInt(e.target.dataset.idx);
+                batchQueue.splice(idx, 1);
+                updateBatchPanel();
+            });
+        });
+    }
 
     // ========== 创建高亮覆盖层 ==========
     overlayBox = document.createElement('div');

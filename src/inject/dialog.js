@@ -187,6 +187,13 @@
                 " onmouseenter="this.style.background='#313244'"
                    onmouseleave="this.style.background='transparent'"
                 >取消</button>
+                <button id="__dialog-add-batch" style="
+                    padding:10px 22px; border:1px solid #f59e0b; background:transparent;
+                    color:#f59e0b; border-radius:10px; cursor:pointer; font-size:14px;
+                    transition:all 0.2s; font-family:'Segoe UI', sans-serif;
+                " onmouseenter="this.style.background='rgba(245,158,11,0.1)'"
+                   onmouseleave="this.style.background='transparent'"
+                >📋 加入队列</button>
                 <button id="__dialog-confirm" style="
                     padding:10px 22px; border:none;
                     background:linear-gradient(135deg, #6366f1, #8b5cf6);
@@ -208,6 +215,38 @@
         // 关闭
         document.getElementById('__dialog-close').addEventListener('click', closeDialog);
         document.getElementById('__dialog-cancel').addEventListener('click', closeDialog);
+
+        // 加入批量队列
+        document.getElementById('__dialog-add-batch').addEventListener('click', () => {
+            const description = document.getElementById('__dialog-description').value.trim();
+            if (!description) {
+                const ta = document.getElementById('__dialog-description');
+                ta.style.borderColor = '#f38ba8';
+                ta.focus();
+                ta.style.animation = 'none';
+                ta.offsetHeight;
+                ta.style.animation = '__dialogShake 0.3s ease';
+                return;
+            }
+            const item = {
+                selector: currentElementInfo.selector,
+                outerHTML: currentElementInfo.outerHTML,
+                computedStyles: currentElementInfo.computedStyles,
+                description: description,
+                directText: currentElementInfo.directText || '',
+                classNames: currentElementInfo.classNames || '',
+                ancestorChain: currentElementInfo.ancestorChain || '',
+                frameworkInfo: currentElementInfo.frameworkInfo || null,
+                identifiers: currentElementInfo.identifiers || null,
+                pageUrl: currentElementInfo.pageUrl,
+                visualChanges: currentElementInfo.visualChanges || null
+            };
+            if (window.__webPickerBatch) {
+                window.__webPickerBatch.add(item);
+            }
+            closeDialog();
+            showToast('✅ 已加入队列，继续选择下一个元素');
+        });
 
         // ESC 关闭
         const escHandler = (e) => {

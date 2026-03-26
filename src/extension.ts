@@ -260,12 +260,21 @@ async function handleModifyRequest(data: {
     referenceImage?: string;
     elementScreenshot?: string;
     visualChanges?: { description: string; changes: any[] } | null;
+    batchMode?: boolean;
+    batchCount?: number;
     pageUrl: string;
 }) {
     const projectHint = await getProjectHint();
 
     // 构造 prompt — 按 AI 定位源文件的优先级排序
-    let prompt = `## 修改要求\n${data.description}\n`;
+    let prompt = '';
+
+    if (data.batchMode) {
+        prompt += `## 批量修改请求（共 ${data.batchCount} 个修改点）\n\n`;
+        prompt += `请按以下要求依次修改对应元素：\n\n${data.description}\n`;
+    } else {
+        prompt += `## 修改要求\n${data.description}\n`;
+    }
 
     // 元素定位信息（最重要）
     prompt += `\n## 元素定位（用这些信息在源码中找到对应文件）\n`;
