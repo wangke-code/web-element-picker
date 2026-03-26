@@ -92,9 +92,11 @@
             const result = await resp.json();
             if (result.success) {
                 undoBtn.innerHTML = '✓';
+                // 撤销成功后隐藏按钮并清除持久化标记
                 setTimeout(() => {
-                    undoBtn.innerHTML = '↩';
-                }, 2000);
+                    undoBtn.style.display = 'none';
+                    try { sessionStorage.removeItem('__picker_show_undo'); } catch(e) {}
+                }, 1500);
             }
         } catch (err) {
             undoBtn.innerHTML = '✕';
@@ -105,9 +107,17 @@
     });
     document.body.appendChild(undoBtn);
 
+    // 页面加载时检查是否需要显示撤销按钮（跨刷新持久化）
+    try {
+        if (sessionStorage.getItem('__picker_show_undo') === 'true') {
+            undoBtn.style.display = 'flex';
+        }
+    } catch(e) {}
+
     // 暴露显示撤销按钮的方法
     window.__webPickerShowUndo = function() {
         undoBtn.style.display = 'flex';
+        try { sessionStorage.setItem('__picker_show_undo', 'true'); } catch(e) {}
     };
 
     // ========== 创建高亮覆盖层 ==========
@@ -281,7 +291,33 @@
         }
     }
 
-    // ========== 可视化编辑器 ==========
+    // ========== 递归复制子元素样式 ==========
+    function copyChildStyles(origEl, cloneEl) {
+        const origChildren = origEl.children;
+        const cloneChildren = cloneEl.children;
+        for (let i = 0; i < origChildren.length && i < cloneChildren.length; i++) {
+            const oc = origChildren[i];
+            const cc = cloneChildren[i];
+            if (isPickerElement(oc)) continue;
+            const cs = window.getComputedStyle(oc);
+            const props = [
+                'color','background','background-color','background-image',
+                'font-family','font-size','font-weight','font-style','line-height',
+                'text-align','text-decoration','text-transform',
+                'padding','margin','border','border-radius','box-shadow',
+                'display','flex-direction','flex-wrap','justify-content','align-items','gap',
+                'width','height','max-width','max-height','min-width','min-height',
+                'overflow','opacity','white-space','word-break','box-sizing','vertical-align',
+                'position','top','left','right','bottom','transform'
+            ];
+            cc.style.cssText = props.map(p => `${p}:${cs.getPropertyValue(p)}`).join(';');
+            if (oc.children.length > 0) {
+                copyChildStyles(oc, cc);
+            }
+        }
+    }
+
+    // ========== Figma 风格可视化编辑器 ==========
     function showVisualEditor(containerEl, selectedElements) {
         const old = document.getElementById('__picker-visual-editor');
         if (old) old.remove();
@@ -289,10 +325,11 @@
         const containerRect = containerEl.getBoundingClientRect();
         const containerStyles = window.getComputedStyle(containerEl);
 
-        // 记录每个子元素的原始位置
+        // 记录每个子元素的原始状态（包括样式属性）
         const elements = selectedElements || Array.from(containerEl.children).filter(c => !isPickerElement(c));
         const originalStates = elements.map(el => {
             const r = el.getBoundingClientRect();
+            const cs = window.getComputedStyle(el);
             return {
                 el,
                 left: r.left - containerRect.left,
@@ -301,38 +338,52 @@
                 height: r.height,
                 selector: getCSSSelector(el),
                 classNames: el.className && typeof el.className === 'string' ? el.className.trim() : '',
-                text: (el.textContent || '').substring(0, 40).trim()
+                text: (el.textContent || '').substring(0, 40).trim(),
+                // 原始样式属性
+                backgroundColor: cs.backgroundColor,
+                color: cs.color,
+                fontSize: parseInt(cs.fontSize) || 14,
+                borderRadius: parseInt(cs.borderRadius) || 0,
+                opacity: parseFloat(cs.opacity) || 1
             };
         });
+
+        let selectedIdx = -1; // 当前选中的元素索引
+        let editingTextIdx = -1; // 正在编辑文字的元素索引
 
         // 全屏编辑器背景
         const editor = document.createElement('div');
         editor.id = '__picker-visual-editor';
         editor.style.cssText = `
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(15, 15, 25, 0.85); backdrop-filter: blur(6px);
+            background: rgba(15, 15, 25, 0.88); backdrop-filter: blur(8px);
             z-index: 2147483645; display: flex; flex-direction: column;
+            font-family: 'Segoe UI', system-ui, sans-serif;
         `;
 
         // 顶部工具栏
         const toolbar = document.createElement('div');
         toolbar.style.cssText = `
             display: flex; justify-content: space-between; align-items: center;
-            padding: 12px 24px; background: rgba(30,30,46,0.95);
+            padding: 10px 20px; background: rgba(30,30,46,0.98);
             border-bottom: 1px solid #45475a; flex-shrink: 0;
         `;
         toolbar.innerHTML = `
             <div style="display:flex;align-items:center;gap:12px;">
-                <span style="font-size:14px;font-weight:600;color:#cba6f7;font-family:'Segoe UI',sans-serif;">🎨 可视化编辑</span>
-                <span style="font-size:11px;color:#6c7086;font-family:'Segoe UI',sans-serif;">拖拽移动 · 拖角缩放 · 双击编辑文字</span>
+                <span style="font-size:14px;font-weight:600;color:#cba6f7;">🎨 可视化编辑</span>
+                <span style="font-size:11px;color:#6c7086;">点击选中 · 拖拽移动 · 拖角缩放 · 双击编辑文字</span>
             </div>
             <div style="display:flex;gap:8px;">
-                <button id="__ve-reset" style="padding:6px 14px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:8px;cursor:pointer;font-size:12px;font-family:'Segoe UI',sans-serif;">重置</button>
-                <button id="__ve-cancel" style="padding:6px 14px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:8px;cursor:pointer;font-size:12px;font-family:'Segoe UI',sans-serif;">取消</button>
-                <button id="__ve-confirm" style="padding:6px 14px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Segoe UI',sans-serif;">确认修改 →</button>
+                <button id="__ve-reset" style="padding:6px 14px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:8px;cursor:pointer;font-size:12px;">重置</button>
+                <button id="__ve-cancel" style="padding:6px 14px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:8px;cursor:pointer;font-size:12px;">取消</button>
+                <button id="__ve-confirm" style="padding:6px 14px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;">确认修改 →</button>
             </div>
         `;
         editor.appendChild(toolbar);
+
+        // 主体：画布 + 属性面板
+        const body = document.createElement('div');
+        body.style.cssText = 'flex:1;display:flex;overflow:hidden;';
 
         // 画布区域
         const canvas = document.createElement('div');
@@ -341,7 +392,7 @@
             overflow: auto; padding: 40px;
         `;
 
-        // 克隆容器（保持原始外观）
+        // 克隆容器
         const stage = document.createElement('div');
         stage.id = '__ve-stage';
         stage.style.cssText = `
@@ -351,10 +402,230 @@
             background: ${containerStyles.background};
             background-color: ${containerStyles.backgroundColor};
             border-radius: ${containerStyles.borderRadius};
-            border: 2px dashed rgba(99,102,241,0.4);
+            border: 2px dashed rgba(99,102,241,0.3);
             overflow: visible;
             flex-shrink: 0;
         `;
+
+        // 右侧属性面板
+        const propsPanel = document.createElement('div');
+        propsPanel.id = '__ve-props-panel';
+        propsPanel.style.cssText = `
+            width: 240px; flex-shrink: 0;
+            background: rgba(30,30,46,0.98); border-left: 1px solid #45475a;
+            overflow-y: auto; padding: 0;
+            display: flex; flex-direction: column;
+        `;
+        propsPanel.innerHTML = `
+            <div style="padding:16px 16px 12px;border-bottom:1px solid #313244;">
+                <div style="font-size:12px;font-weight:600;color:#a6adc8;">属性</div>
+            </div>
+            <div id="__ve-props-content" style="padding:12px 16px;flex:1;">
+                <div style="color:#6c7086;font-size:12px;text-align:center;padding:40px 0;">
+                    点击选中一个元素<br>查看和编辑属性
+                </div>
+            </div>
+        `;
+
+        // 辅助函数：RGB/RGBA 转 HEX
+        function rgbToHex(rgbStr) {
+            if (!rgbStr || rgbStr === 'transparent') return '#000000';
+            const match = rgbStr.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (!match) return '#000000';
+            const r = parseInt(match[1]), g = parseInt(match[2]), b = parseInt(match[3]);
+            return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+        }
+
+        // 辅助函数：更新属性面板内容
+        function updatePropsPanel(idx) {
+            const content = document.getElementById('__ve-props-content');
+            if (!content || idx < 0 || idx >= editableItems.length) {
+                if (content) content.innerHTML = `<div style="color:#6c7086;font-size:12px;text-align:center;padding:40px 0;">点击选中一个元素<br>查看和编辑属性</div>`;
+                return;
+            }
+            const item = editableItems[idx];
+            const w = item.wrapper;
+            const clone = w.querySelector('div, span, p, h1, h2, h3, a, button, img, section, article, header, footer, nav, main, aside, li, ul, ol, table') || w.children[0];
+
+            const curX = Math.round(parseFloat(w.style.left));
+            const curY = Math.round(parseFloat(w.style.top));
+            const curW = Math.round(parseFloat(w.style.width));
+            const curH = Math.round(parseFloat(w.style.height));
+            const curBg = rgbToHex(item.currentBg || item.original.backgroundColor);
+            const curColor = rgbToHex(item.currentColor || item.original.color);
+            const curFontSize = item.currentFontSize || item.original.fontSize;
+            const curRadius = item.currentBorderRadius !== undefined ? item.currentBorderRadius : item.original.borderRadius;
+            const curOpacity = item.currentOpacity !== undefined ? item.currentOpacity : item.original.opacity;
+
+            const inputStyle = `width:100%;padding:4px 6px;background:#181825;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;font-size:12px;font-family:monospace;outline:none;box-sizing:border-box;`;
+            const labelStyle = `font-size:10px;color:#6c7086;margin-bottom:2px;display:block;`;
+            const rowStyle = `margin-bottom:10px;`;
+            const halfRowStyle = `display:inline-block;width:48%;vertical-align:top;`;
+
+            content.innerHTML = `
+                <div style="font-size:11px;color:#89b4fa;margin-bottom:12px;font-family:monospace;word-break:break-all;">${item.original.classNames || item.original.selector}</div>
+
+                <div style="display:flex;gap:6px;${rowStyle}">
+                    <div style="flex:1;">
+                        <label style="${labelStyle}">X</label>
+                        <input type="number" id="__ve-prop-x" value="${curX}" style="${inputStyle}">
+                    </div>
+                    <div style="flex:1;">
+                        <label style="${labelStyle}">Y</label>
+                        <input type="number" id="__ve-prop-y" value="${curY}" style="${inputStyle}">
+                    </div>
+                </div>
+                <div style="display:flex;gap:6px;${rowStyle}">
+                    <div style="flex:1;">
+                        <label style="${labelStyle}">W</label>
+                        <input type="number" id="__ve-prop-w" value="${curW}" style="${inputStyle}">
+                    </div>
+                    <div style="flex:1;">
+                        <label style="${labelStyle}">H</label>
+                        <input type="number" id="__ve-prop-h" value="${curH}" style="${inputStyle}">
+                    </div>
+                </div>
+
+                <div style="border-top:1px solid #313244;margin:8px 0;"></div>
+
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">背景色</label>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                        <input type="color" id="__ve-prop-bg" value="${curBg}" style="width:28px;height:28px;border:1px solid #45475a;border-radius:4px;cursor:pointer;padding:0;background:none;">
+                        <input type="text" id="__ve-prop-bg-text" value="${curBg}" style="${inputStyle}flex:1;">
+                    </div>
+                </div>
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">文字色</label>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                        <input type="color" id="__ve-prop-color" value="${curColor}" style="width:28px;height:28px;border:1px solid #45475a;border-radius:4px;cursor:pointer;padding:0;background:none;">
+                        <input type="text" id="__ve-prop-color-text" value="${curColor}" style="${inputStyle}flex:1;">
+                    </div>
+                </div>
+
+                <div style="border-top:1px solid #313244;margin:8px 0;"></div>
+
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">字号 <span id="__ve-prop-fs-val">${curFontSize}</span>px</label>
+                    <input type="range" id="__ve-prop-fs" min="8" max="72" value="${curFontSize}" style="width:100%;accent-color:#6366f1;cursor:pointer;">
+                </div>
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">圆角 <span id="__ve-prop-br-val">${curRadius}</span>px</label>
+                    <input type="range" id="__ve-prop-br" min="0" max="50" value="${curRadius}" style="width:100%;accent-color:#6366f1;cursor:pointer;">
+                </div>
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">透明度 <span id="__ve-prop-op-val">${Math.round(curOpacity * 100)}</span>%</label>
+                    <input type="range" id="__ve-prop-op" min="0" max="100" value="${Math.round(curOpacity * 100)}" style="width:100%;accent-color:#6366f1;cursor:pointer;">
+                </div>
+            `;
+
+            // 绑定属性面板事件
+            const bindInput = (id, callback) => {
+                const el = document.getElementById(id);
+                if (el) el.addEventListener('input', callback);
+            };
+
+            // 位置/尺寸
+            bindInput('__ve-prop-x', (e) => { w.style.left = e.target.value + 'px'; });
+            bindInput('__ve-prop-y', (e) => { w.style.top = e.target.value + 'px'; });
+            bindInput('__ve-prop-w', (e) => {
+                w.style.width = e.target.value + 'px';
+                updateSizeLabel(idx);
+            });
+            bindInput('__ve-prop-h', (e) => {
+                w.style.height = e.target.value + 'px';
+                updateSizeLabel(idx);
+            });
+
+            // 背景色
+            bindInput('__ve-prop-bg', (e) => {
+                const cloneEl = w.children[0];
+                if (cloneEl) cloneEl.style.backgroundColor = e.target.value;
+                item.currentBg = e.target.value;
+                const textEl = document.getElementById('__ve-prop-bg-text');
+                if (textEl) textEl.value = e.target.value;
+            });
+            bindInput('__ve-prop-bg-text', (e) => {
+                const val = e.target.value;
+                if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+                    const cloneEl = w.children[0];
+                    if (cloneEl) cloneEl.style.backgroundColor = val;
+                    item.currentBg = val;
+                    const colorEl = document.getElementById('__ve-prop-bg');
+                    if (colorEl) colorEl.value = val;
+                }
+            });
+
+            // 文字色
+            bindInput('__ve-prop-color', (e) => {
+                const cloneEl = w.children[0];
+                if (cloneEl) cloneEl.style.color = e.target.value;
+                item.currentColor = e.target.value;
+                const textEl = document.getElementById('__ve-prop-color-text');
+                if (textEl) textEl.value = e.target.value;
+            });
+            bindInput('__ve-prop-color-text', (e) => {
+                const val = e.target.value;
+                if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+                    const cloneEl = w.children[0];
+                    if (cloneEl) cloneEl.style.color = val;
+                    item.currentColor = val;
+                    const colorEl = document.getElementById('__ve-prop-color');
+                    if (colorEl) colorEl.value = val;
+                }
+            });
+
+            // 字号
+            bindInput('__ve-prop-fs', (e) => {
+                const val = parseInt(e.target.value);
+                const cloneEl = w.children[0];
+                if (cloneEl) cloneEl.style.fontSize = val + 'px';
+                item.currentFontSize = val;
+                const valEl = document.getElementById('__ve-prop-fs-val');
+                if (valEl) valEl.textContent = val;
+            });
+
+            // 圆角
+            bindInput('__ve-prop-br', (e) => {
+                const val = parseInt(e.target.value);
+                const cloneEl = w.children[0];
+                if (cloneEl) cloneEl.style.borderRadius = val + 'px';
+                item.currentBorderRadius = val;
+                const valEl = document.getElementById('__ve-prop-br-val');
+                if (valEl) valEl.textContent = val;
+            });
+
+            // 透明度
+            bindInput('__ve-prop-op', (e) => {
+                const val = parseInt(e.target.value) / 100;
+                w.style.opacity = val;
+                item.currentOpacity = val;
+                const valEl = document.getElementById('__ve-prop-op-val');
+                if (valEl) valEl.textContent = Math.round(val * 100);
+            });
+        }
+
+        function updateSizeLabel(idx) {
+            const item = editableItems[idx];
+            if (!item) return;
+            const sl = item.wrapper.querySelector('.__ve-size-label');
+            if (sl) sl.textContent = `${Math.round(parseFloat(item.wrapper.style.width))}×${Math.round(parseFloat(item.wrapper.style.height))}`;
+        }
+
+        // 选中元素的视觉效果
+        function selectItem(idx) {
+            // 清除上一个选中态
+            editableItems.forEach((item, i) => {
+                item.wrapper.style.outline = i === idx ? '2px solid #6366f1' : '1px dashed rgba(99,102,241,0.25)';
+                // 显示/隐藏 8 方向手柄
+                const handles = item.wrapper.querySelectorAll('.__ve-handle');
+                handles.forEach(h => h.style.opacity = i === idx ? '1' : '0');
+                const sl = item.wrapper.querySelector('.__ve-size-label');
+                if (sl) sl.style.opacity = i === idx ? '1' : '0';
+            });
+            selectedIdx = idx;
+            updatePropsPanel(idx);
+        }
 
         // 为每个子元素创建可编辑的克隆
         const editableItems = [];
@@ -370,163 +641,287 @@
                 width: ${state.width}px;
                 height: ${state.height}px;
                 cursor: move;
-                outline: 1px solid transparent;
-                transition: outline-color 0.15s;
-                overflow: hidden;
+                outline: 1px dashed rgba(99,102,241,0.25);
+                overflow: visible;
             `;
 
-            // 克隆内容
-            clone.style.cssText = state.el.getAttribute('style') || '';
-            clone.style.width = '100%';
-            clone.style.height = '100%';
-            clone.style.margin = '0';
-            clone.style.position = 'relative';
-            clone.style.pointerEvents = 'none';
+            // 克隆内容 — 复制完整计算样式，确保外观一致
+            const computedStyle = window.getComputedStyle(state.el);
+            const stylesToCopy = [
+                'color','background','background-color','background-image','background-size',
+                'font-family','font-size','font-weight','font-style','line-height','letter-spacing',
+                'text-align','text-decoration','text-transform','white-space','word-break',
+                'padding','padding-top','padding-right','padding-bottom','padding-left',
+                'border','border-radius','box-shadow','text-shadow',
+                'display','flex-direction','flex-wrap','justify-content','align-items','gap',
+                'grid-template-columns','grid-template-rows','grid-gap',
+                'overflow','opacity','transform','transition',
+                'box-sizing','vertical-align'
+            ];
+            let cloneCSS = stylesToCopy.map(p => `${p}:${computedStyle.getPropertyValue(p)}`).join(';');
+            clone.style.cssText = cloneCSS + ';width:100%;height:100%;margin:0;position:relative;pointer-events:none;overflow:hidden;';
+            // 递ively fix child styles too
+            copyChildStyles(state.el, clone);
             wrapper.appendChild(clone);
 
-            // 缩放手柄（右下角）
-            const handle = document.createElement('div');
-            handle.className = '__ve-resize-handle';
-            handle.style.cssText = `
-                position: absolute; right: -4px; bottom: -4px;
-                width: 10px; height: 10px; background: #6366f1;
-                border-radius: 2px; cursor: nwse-resize; z-index: 2;
-                opacity: 0; transition: opacity 0.15s;
-            `;
-            wrapper.appendChild(handle);
+            // 8 方向缩放手柄
+            const handlePositions = [
+                { cursor: 'nwse-resize', pos: 'top:-4px;left:-4px;', dir: 'nw' },
+                { cursor: 'ns-resize',   pos: 'top:-4px;left:calc(50% - 4px);', dir: 'n' },
+                { cursor: 'nesw-resize', pos: 'top:-4px;right:-4px;', dir: 'ne' },
+                { cursor: 'ew-resize',   pos: 'top:calc(50% - 4px);right:-4px;', dir: 'e' },
+                { cursor: 'nwse-resize', pos: 'bottom:-4px;right:-4px;', dir: 'se' },
+                { cursor: 'ns-resize',   pos: 'bottom:-4px;left:calc(50% - 4px);', dir: 's' },
+                { cursor: 'nesw-resize', pos: 'bottom:-4px;left:-4px;', dir: 'sw' },
+                { cursor: 'ew-resize',   pos: 'top:calc(50% - 4px);left:-4px;', dir: 'w' },
+            ];
+            handlePositions.forEach(hp => {
+                const h = document.createElement('div');
+                h.className = '__ve-handle';
+                h.dataset.dir = hp.dir;
+                h.style.cssText = `
+                    position:absolute;${hp.pos}
+                    width:8px;height:8px;background:#6366f1;
+                    border:1px solid #fff;border-radius:1px;
+                    cursor:${hp.cursor};z-index:3;
+                    opacity:0;transition:opacity 0.1s;
+                `;
+                wrapper.appendChild(h);
+            });
 
             // 尺寸标签
             const sizeLabel = document.createElement('div');
             sizeLabel.className = '__ve-size-label';
             sizeLabel.style.cssText = `
                 position: absolute; bottom: -20px; left: 0;
-                font-size: 10px; color: #6c7086; white-space: nowrap;
+                font-size: 10px; color: #89b4fa; white-space: nowrap;
                 font-family: monospace; opacity: 0; transition: opacity 0.15s;
+                background: rgba(30,30,46,0.9); padding: 1px 6px; border-radius: 3px;
             `;
             sizeLabel.textContent = `${Math.round(state.width)}×${Math.round(state.height)}`;
             wrapper.appendChild(sizeLabel);
 
-            // 悬停效果
-            wrapper.addEventListener('mouseenter', () => {
-                wrapper.style.outlineColor = '#6366f1';
-                handle.style.opacity = '1';
-                sizeLabel.style.opacity = '1';
-            });
-            wrapper.addEventListener('mouseleave', () => {
-                wrapper.style.outlineColor = 'transparent';
-                handle.style.opacity = '0';
-                sizeLabel.style.opacity = '0';
-            });
-
-            // 拖拽移动 (handled via _drag on editableItems)
+            // 点击选中
             wrapper.addEventListener('mousedown', (e) => {
-                if (e.target === handle) return;
+                if (e.target.classList.contains('__ve-handle')) return;
                 e.preventDefault();
+                selectItem(idx);
             });
 
-            // 缩放 (handled via _resize on editableItems)
-            handle.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-            });
-
-            // 双击编辑文字
+            // 双击内联编辑文字
             wrapper.addEventListener('dblclick', (e) => {
                 e.preventDefault();
-                const textEl = clone.querySelector('h1,h2,h3,h4,h5,p,span,a,button,label,td,th,li') || clone;
-                const currentText = textEl.textContent;
-                const input = prompt('编辑文字内容:', currentText);
-                if (input !== null && input !== currentText) {
-                    textEl.textContent = input;
-                    editableItems[idx].textChanged = input;
-                }
+                e.stopPropagation();
+                if (editingTextIdx >= 0) return; // 已在编辑中
+                editingTextIdx = idx;
+
+                const textEl = clone.querySelector('h1,h2,h3,h4,h5,h6,p,span,a,button,label,td,th,li,div') || clone;
+                const currentText = textEl.textContent || '';
+                clone.style.pointerEvents = 'auto';
+
+                // 创建内联编辑框
+                const editBox = document.createElement('div');
+                editBox.className = '__ve-text-edit';
+                editBox.contentEditable = 'true';
+                editBox.textContent = currentText;
+                editBox.style.cssText = `
+                    position:absolute;top:0;left:0;right:0;bottom:0;
+                    background:rgba(99,102,241,0.08);
+                    border:2px solid #6366f1;border-radius:4px;
+                    color:inherit;font:inherit;padding:4px 8px;
+                    outline:none;overflow:auto;z-index:5;
+                    white-space:pre-wrap;word-break:break-word;
+                    display:flex;align-items:center;
+                    font-size:${window.getComputedStyle(textEl).fontSize};
+                    color:${window.getComputedStyle(textEl).color};
+                    cursor:text;
+                `;
+                wrapper.appendChild(editBox);
+                wrapper.style.cursor = 'text';
+
+                // 选中所有文字
+                setTimeout(() => {
+                    editBox.focus();
+                    const range = document.createRange();
+                    range.selectNodeContents(editBox);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }, 50);
+
+                const finishEdit = (save) => {
+                    if (editingTextIdx !== idx) return;
+                    editingTextIdx = -1;
+                    const newText = editBox.textContent.trim();
+                    editBox.remove();
+                    wrapper.style.cursor = 'move';
+                    clone.style.pointerEvents = 'none';
+                    if (save && newText !== currentText) {
+                        textEl.textContent = newText;
+                        editableItems[idx].textChanged = newText;
+                    }
+                };
+
+                editBox.addEventListener('keydown', (ke) => {
+                    ke.stopPropagation();
+                    if (ke.key === 'Enter' && !ke.shiftKey) { ke.preventDefault(); finishEdit(true); }
+                    if (ke.key === 'Escape') { ke.preventDefault(); finishEdit(false); }
+                });
+                editBox.addEventListener('blur', () => finishEdit(true));
             });
 
             editableItems.push({
                 wrapper,
+                clone,
                 original: state,
-                textChanged: null
+                textChanged: null,
+                currentBg: null,
+                currentColor: null,
+                currentFontSize: null,
+                currentBorderRadius: undefined,
+                currentOpacity: undefined,
             });
 
             stage.appendChild(wrapper);
         });
 
-        // 全局鼠标事件
+        // 全局鼠标事件（拖拽 + 多方向缩放）
+        let activeAction = null; // { type: 'drag'|'resize', idx, ... }
+
         const onMouseMove = (e) => {
-            editableItems.forEach((item, idx) => {
-                // 拖拽
-                if (editableItems[idx]._drag) {
-                    const d = editableItems[idx]._drag;
-                    item.wrapper.style.left = (d.origLeft + e.clientX - d.startX) + 'px';
-                    item.wrapper.style.top = (d.origTop + e.clientY - d.startY) + 'px';
-                }
-                // 缩放
-                if (editableItems[idx]._resize) {
-                    const r = editableItems[idx]._resize;
-                    const newW = Math.max(20, r.origW + e.clientX - r.startX);
-                    const newH = Math.max(20, r.origH + e.clientY - r.startY);
-                    item.wrapper.style.width = newW + 'px';
-                    item.wrapper.style.height = newH + 'px';
-                    const sl = item.wrapper.querySelector('.__ve-size-label');
-                    if (sl) sl.textContent = `${Math.round(newW)}×${Math.round(newH)}`;
-                }
-            });
-        };
-        const onMouseUp = () => {
-            editableItems.forEach((_item, idx) => {
-                editableItems[idx]._drag = null;
-                editableItems[idx]._resize = null;
-            });
+            if (!activeAction) return;
+            const item = editableItems[activeAction.idx];
+            const w = item.wrapper;
+
+            if (activeAction.type === 'drag') {
+                const newLeft = activeAction.origLeft + e.clientX - activeAction.startX;
+                const newTop = activeAction.origTop + e.clientY - activeAction.startY;
+                w.style.left = newLeft + 'px';
+                w.style.top = newTop + 'px';
+                // 同步属性面板
+                const xEl = document.getElementById('__ve-prop-x');
+                const yEl = document.getElementById('__ve-prop-y');
+                if (xEl) xEl.value = Math.round(newLeft);
+                if (yEl) yEl.value = Math.round(newTop);
+            }
+
+            if (activeAction.type === 'resize') {
+                const dx = e.clientX - activeAction.startX;
+                const dy = e.clientY - activeAction.startY;
+                const dir = activeAction.dir;
+                let { origLeft, origTop, origW, origH } = activeAction;
+                let newL = origLeft, newT = origTop, newW = origW, newH = origH;
+
+                // 根据方向计算新的位置和尺寸
+                if (dir.includes('e')) { newW = Math.max(20, origW + dx); }
+                if (dir.includes('w')) { newW = Math.max(20, origW - dx); newL = origLeft + (origW - newW); }
+                if (dir.includes('s')) { newH = Math.max(20, origH + dy); }
+                if (dir.includes('n')) { newH = Math.max(20, origH - dy); newT = origTop + (origH - newH); }
+
+                w.style.left = newL + 'px';
+                w.style.top = newT + 'px';
+                w.style.width = newW + 'px';
+                w.style.height = newH + 'px';
+                updateSizeLabel(activeAction.idx);
+
+                // 同步属性面板
+                const xEl = document.getElementById('__ve-prop-x');
+                const yEl = document.getElementById('__ve-prop-y');
+                const wEl = document.getElementById('__ve-prop-w');
+                const hEl = document.getElementById('__ve-prop-h');
+                if (xEl) xEl.value = Math.round(newL);
+                if (yEl) yEl.value = Math.round(newT);
+                if (wEl) wEl.value = Math.round(newW);
+                if (hEl) hEl.value = Math.round(newH);
+            }
         };
 
-        // 绑定拖拽/缩放到各 item
+        const onMouseUp = () => {
+            activeAction = null;
+        };
+
+        // 绑定拖拽和多方向缩放
         editableItems.forEach((item, idx) => {
+            // 拖拽
             item.wrapper.addEventListener('mousedown', (e) => {
-                if (e.target.className === '__ve-resize-handle') return;
-                editableItems[idx]._drag = {
+                if (e.target.classList.contains('__ve-handle')) return;
+                if (editingTextIdx >= 0) return;
+                selectItem(idx);
+                activeAction = {
+                    type: 'drag', idx,
                     startX: e.clientX, startY: e.clientY,
                     origLeft: parseFloat(item.wrapper.style.left),
                     origTop: parseFloat(item.wrapper.style.top)
                 };
             });
-            const resizeHandle = item.wrapper.querySelector('.__ve-resize-handle');
-            if (resizeHandle) {
-                resizeHandle.addEventListener('mousedown', (e) => {
+
+            // 8 方向缩放手柄
+            item.wrapper.querySelectorAll('.__ve-handle').forEach(h => {
+                h.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
                     e.stopPropagation();
-                    editableItems[idx]._resize = {
+                    selectItem(idx);
+                    activeAction = {
+                        type: 'resize', idx,
+                        dir: h.dataset.dir,
                         startX: e.clientX, startY: e.clientY,
+                        origLeft: parseFloat(item.wrapper.style.left),
+                        origTop: parseFloat(item.wrapper.style.top),
                         origW: parseFloat(item.wrapper.style.width),
                         origH: parseFloat(item.wrapper.style.height)
                     };
                 });
-            }
+            });
         });
 
         editor.addEventListener('mousemove', onMouseMove);
         editor.addEventListener('mouseup', onMouseUp);
 
+        // 点击画布空白取消选中
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.target === canvas || e.target === stage) {
+                selectItem(-1);
+            }
+        });
+
         canvas.appendChild(stage);
-        editor.appendChild(canvas);
+        body.appendChild(canvas);
+        body.appendChild(propsPanel);
+        editor.appendChild(body);
         document.body.appendChild(editor);
 
         // 按钮事件
         document.getElementById('__ve-cancel').addEventListener('click', () => editor.remove());
 
         document.getElementById('__ve-reset').addEventListener('click', () => {
-            editableItems.forEach((item, idx) => {
+            editableItems.forEach((item) => {
                 const s = item.original;
                 item.wrapper.style.left = s.left + 'px';
                 item.wrapper.style.top = s.top + 'px';
                 item.wrapper.style.width = s.width + 'px';
                 item.wrapper.style.height = s.height + 'px';
+                item.wrapper.style.opacity = s.opacity;
                 item.textChanged = null;
-                const sl = item.wrapper.querySelector('.__ve-size-label');
-                if (sl) sl.textContent = `${Math.round(s.width)}×${Math.round(s.height)}`;
+                item.currentBg = null;
+                item.currentColor = null;
+                item.currentFontSize = null;
+                item.currentBorderRadius = undefined;
+                item.currentOpacity = undefined;
+                // 重置克隆元素样式
+                const cloneEl = item.wrapper.children[0];
+                if (cloneEl) {
+                    cloneEl.style.backgroundColor = '';
+                    cloneEl.style.color = '';
+                    cloneEl.style.fontSize = '';
+                    cloneEl.style.borderRadius = '';
+                }
+                updateSizeLabel(editableItems.indexOf(item));
             });
+            if (selectedIdx >= 0) updatePropsPanel(selectedIdx);
         });
 
         document.getElementById('__ve-confirm').addEventListener('click', () => {
-            // 收集变更
+            // 收集变更（包含样式属性）
             const changes = [];
             editableItems.forEach((item) => {
                 const orig = item.original;
@@ -550,6 +945,21 @@
                 if (item.textChanged !== null) {
                     diffs.push(`文字改为: "${item.textChanged}"`);
                 }
+                if (item.currentBg) {
+                    diffs.push(`背景色改为: ${item.currentBg}`);
+                }
+                if (item.currentColor) {
+                    diffs.push(`文字颜色改为: ${item.currentColor}`);
+                }
+                if (item.currentFontSize && item.currentFontSize !== orig.fontSize) {
+                    diffs.push(`字号改为: ${item.currentFontSize}px`);
+                }
+                if (item.currentBorderRadius !== undefined && item.currentBorderRadius !== orig.borderRadius) {
+                    diffs.push(`圆角改为: ${item.currentBorderRadius}px`);
+                }
+                if (item.currentOpacity !== undefined && Math.abs(item.currentOpacity - orig.opacity) > 0.01) {
+                    diffs.push(`透明度改为: ${Math.round(item.currentOpacity * 100)}%`);
+                }
 
                 if (diffs.length > 0) {
                     changes.push({
@@ -561,7 +971,12 @@
                         newSize: { width: Math.round(newW), height: Math.round(newH) },
                         originalPosition: { left: Math.round(orig.left), top: Math.round(orig.top) },
                         originalSize: { width: Math.round(orig.width), height: Math.round(orig.height) },
-                        newText: item.textChanged
+                        newText: item.textChanged,
+                        newBg: item.currentBg,
+                        newColor: item.currentColor,
+                        newFontSize: item.currentFontSize,
+                        newBorderRadius: item.currentBorderRadius,
+                        newOpacity: item.currentOpacity
                     });
                 }
             });
@@ -569,7 +984,6 @@
             editor.remove();
 
             if (changes.length === 0) {
-                // 没有变更，直接打开普通对话框
                 selectAndOpenDialog(containerEl);
                 return;
             }
@@ -583,13 +997,13 @@
                 desc += '\n';
             });
 
-            // 打开对话框，预填可视化变更
             selectAndOpenDialog(containerEl, { description: desc, changes });
         });
 
-        // ESC 关闭
+        // ESC 关闭（但编辑文字时不关闭编辑器）
         const escHandler = (e) => {
             if (e.key === 'Escape') {
+                if (editingTextIdx >= 0) return; // 编辑文字中的 ESC 由编辑框自行处理
                 editor.remove();
                 document.removeEventListener('keydown', escHandler);
             }
