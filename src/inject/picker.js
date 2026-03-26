@@ -242,10 +242,11 @@
     }, true);
 
     // ========== 选中元素并打开对话框（支持多选）==========
-    function selectAndOpenDialog(elOrEls) {
+    function selectAndOpenDialog(elOrEls, visualChanges) {
         const elements = Array.isArray(elOrEls) ? elOrEls : [elOrEls];
         if (elements.length === 1) {
             const info = getElementInfo(elements[0]);
+            if (visualChanges) { info.visualChanges = visualChanges; }
             captureElementScreenshot(elements[0]).then((screenshot) => {
                 info.elementScreenshot = screenshot;
                 if (window.__webPickerDialog) {
@@ -271,12 +272,329 @@
                 pageUrl: infos[0].pageUrl,
                 elementScreenshot: null,
                 multiSelect: true,
-                selectedCount: elements.length
+                selectedCount: elements.length,
+                visualChanges: visualChanges || null
             };
             if (window.__webPickerDialog) {
                 window.__webPickerDialog.open(merged);
             }
         }
+    }
+
+    // ========== 可视化编辑器 ==========
+    function showVisualEditor(containerEl, selectedElements) {
+        const old = document.getElementById('__picker-visual-editor');
+        if (old) old.remove();
+
+        const containerRect = containerEl.getBoundingClientRect();
+        const containerStyles = window.getComputedStyle(containerEl);
+
+        // 记录每个子元素的原始位置
+        const elements = selectedElements || Array.from(containerEl.children).filter(c => !isPickerElement(c));
+        const originalStates = elements.map(el => {
+            const r = el.getBoundingClientRect();
+            return {
+                el,
+                left: r.left - containerRect.left,
+                top: r.top - containerRect.top,
+                width: r.width,
+                height: r.height,
+                selector: getCSSSelector(el),
+                classNames: el.className && typeof el.className === 'string' ? el.className.trim() : '',
+                text: (el.textContent || '').substring(0, 40).trim()
+            };
+        });
+
+        // 全屏编辑器背景
+        const editor = document.createElement('div');
+        editor.id = '__picker-visual-editor';
+        editor.style.cssText = `
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(15, 15, 25, 0.85); backdrop-filter: blur(6px);
+            z-index: 2147483645; display: flex; flex-direction: column;
+        `;
+
+        // 顶部工具栏
+        const toolbar = document.createElement('div');
+        toolbar.style.cssText = `
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 12px 24px; background: rgba(30,30,46,0.95);
+            border-bottom: 1px solid #45475a; flex-shrink: 0;
+        `;
+        toolbar.innerHTML = `
+            <div style="display:flex;align-items:center;gap:12px;">
+                <span style="font-size:14px;font-weight:600;color:#cba6f7;font-family:'Segoe UI',sans-serif;">🎨 可视化编辑</span>
+                <span style="font-size:11px;color:#6c7086;font-family:'Segoe UI',sans-serif;">拖拽移动 · 拖角缩放 · 双击编辑文字</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+                <button id="__ve-reset" style="padding:6px 14px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:8px;cursor:pointer;font-size:12px;font-family:'Segoe UI',sans-serif;">重置</button>
+                <button id="__ve-cancel" style="padding:6px 14px;border:1px solid #45475a;background:transparent;color:#cdd6f4;border-radius:8px;cursor:pointer;font-size:12px;font-family:'Segoe UI',sans-serif;">取消</button>
+                <button id="__ve-confirm" style="padding:6px 14px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Segoe UI',sans-serif;">确认修改 →</button>
+            </div>
+        `;
+        editor.appendChild(toolbar);
+
+        // 画布区域
+        const canvas = document.createElement('div');
+        canvas.style.cssText = `
+            flex: 1; display: flex; align-items: center; justify-content: center;
+            overflow: auto; padding: 40px;
+        `;
+
+        // 克隆容器（保持原始外观）
+        const stage = document.createElement('div');
+        stage.id = '__ve-stage';
+        stage.style.cssText = `
+            position: relative;
+            width: ${containerRect.width}px;
+            height: ${containerRect.height}px;
+            background: ${containerStyles.background};
+            background-color: ${containerStyles.backgroundColor};
+            border-radius: ${containerStyles.borderRadius};
+            border: 2px dashed rgba(99,102,241,0.4);
+            overflow: visible;
+            flex-shrink: 0;
+        `;
+
+        // 为每个子元素创建可编辑的克隆
+        const editableItems = [];
+        originalStates.forEach((state, idx) => {
+            const clone = state.el.cloneNode(true);
+            const wrapper = document.createElement('div');
+            wrapper.className = '__ve-item';
+            wrapper.dataset.index = idx;
+            wrapper.style.cssText = `
+                position: absolute;
+                left: ${state.left}px;
+                top: ${state.top}px;
+                width: ${state.width}px;
+                height: ${state.height}px;
+                cursor: move;
+                outline: 1px solid transparent;
+                transition: outline-color 0.15s;
+                overflow: hidden;
+            `;
+
+            // 克隆内容
+            clone.style.cssText = state.el.getAttribute('style') || '';
+            clone.style.width = '100%';
+            clone.style.height = '100%';
+            clone.style.margin = '0';
+            clone.style.position = 'relative';
+            clone.style.pointerEvents = 'none';
+            wrapper.appendChild(clone);
+
+            // 缩放手柄（右下角）
+            const handle = document.createElement('div');
+            handle.className = '__ve-resize-handle';
+            handle.style.cssText = `
+                position: absolute; right: -4px; bottom: -4px;
+                width: 10px; height: 10px; background: #6366f1;
+                border-radius: 2px; cursor: nwse-resize; z-index: 2;
+                opacity: 0; transition: opacity 0.15s;
+            `;
+            wrapper.appendChild(handle);
+
+            // 尺寸标签
+            const sizeLabel = document.createElement('div');
+            sizeLabel.className = '__ve-size-label';
+            sizeLabel.style.cssText = `
+                position: absolute; bottom: -20px; left: 0;
+                font-size: 10px; color: #6c7086; white-space: nowrap;
+                font-family: monospace; opacity: 0; transition: opacity 0.15s;
+            `;
+            sizeLabel.textContent = `${Math.round(state.width)}×${Math.round(state.height)}`;
+            wrapper.appendChild(sizeLabel);
+
+            // 悬停效果
+            wrapper.addEventListener('mouseenter', () => {
+                wrapper.style.outlineColor = '#6366f1';
+                handle.style.opacity = '1';
+                sizeLabel.style.opacity = '1';
+            });
+            wrapper.addEventListener('mouseleave', () => {
+                wrapper.style.outlineColor = 'transparent';
+                handle.style.opacity = '0';
+                sizeLabel.style.opacity = '0';
+            });
+
+            // 拖拽移动 (handled via _drag on editableItems)
+            wrapper.addEventListener('mousedown', (e) => {
+                if (e.target === handle) return;
+                e.preventDefault();
+            });
+
+            // 缩放 (handled via _resize on editableItems)
+            handle.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+
+            // 双击编辑文字
+            wrapper.addEventListener('dblclick', (e) => {
+                e.preventDefault();
+                const textEl = clone.querySelector('h1,h2,h3,h4,h5,p,span,a,button,label,td,th,li') || clone;
+                const currentText = textEl.textContent;
+                const input = prompt('编辑文字内容:', currentText);
+                if (input !== null && input !== currentText) {
+                    textEl.textContent = input;
+                    editableItems[idx].textChanged = input;
+                }
+            });
+
+            editableItems.push({
+                wrapper,
+                original: state,
+                textChanged: null
+            });
+
+            stage.appendChild(wrapper);
+        });
+
+        // 全局鼠标事件
+        const onMouseMove = (e) => {
+            editableItems.forEach((item, idx) => {
+                // 拖拽
+                if (editableItems[idx]._drag) {
+                    const d = editableItems[idx]._drag;
+                    item.wrapper.style.left = (d.origLeft + e.clientX - d.startX) + 'px';
+                    item.wrapper.style.top = (d.origTop + e.clientY - d.startY) + 'px';
+                }
+                // 缩放
+                if (editableItems[idx]._resize) {
+                    const r = editableItems[idx]._resize;
+                    const newW = Math.max(20, r.origW + e.clientX - r.startX);
+                    const newH = Math.max(20, r.origH + e.clientY - r.startY);
+                    item.wrapper.style.width = newW + 'px';
+                    item.wrapper.style.height = newH + 'px';
+                    const sl = item.wrapper.querySelector('.__ve-size-label');
+                    if (sl) sl.textContent = `${Math.round(newW)}×${Math.round(newH)}`;
+                }
+            });
+        };
+        const onMouseUp = () => {
+            editableItems.forEach((_item, idx) => {
+                editableItems[idx]._drag = null;
+                editableItems[idx]._resize = null;
+            });
+        };
+
+        // 绑定拖拽/缩放到各 item
+        editableItems.forEach((item, idx) => {
+            item.wrapper.addEventListener('mousedown', (e) => {
+                if (e.target.className === '__ve-resize-handle') return;
+                editableItems[idx]._drag = {
+                    startX: e.clientX, startY: e.clientY,
+                    origLeft: parseFloat(item.wrapper.style.left),
+                    origTop: parseFloat(item.wrapper.style.top)
+                };
+            });
+            const resizeHandle = item.wrapper.querySelector('.__ve-resize-handle');
+            if (resizeHandle) {
+                resizeHandle.addEventListener('mousedown', (e) => {
+                    e.stopPropagation();
+                    editableItems[idx]._resize = {
+                        startX: e.clientX, startY: e.clientY,
+                        origW: parseFloat(item.wrapper.style.width),
+                        origH: parseFloat(item.wrapper.style.height)
+                    };
+                });
+            }
+        });
+
+        editor.addEventListener('mousemove', onMouseMove);
+        editor.addEventListener('mouseup', onMouseUp);
+
+        canvas.appendChild(stage);
+        editor.appendChild(canvas);
+        document.body.appendChild(editor);
+
+        // 按钮事件
+        document.getElementById('__ve-cancel').addEventListener('click', () => editor.remove());
+
+        document.getElementById('__ve-reset').addEventListener('click', () => {
+            editableItems.forEach((item, idx) => {
+                const s = item.original;
+                item.wrapper.style.left = s.left + 'px';
+                item.wrapper.style.top = s.top + 'px';
+                item.wrapper.style.width = s.width + 'px';
+                item.wrapper.style.height = s.height + 'px';
+                item.textChanged = null;
+                const sl = item.wrapper.querySelector('.__ve-size-label');
+                if (sl) sl.textContent = `${Math.round(s.width)}×${Math.round(s.height)}`;
+            });
+        });
+
+        document.getElementById('__ve-confirm').addEventListener('click', () => {
+            // 收集变更
+            const changes = [];
+            editableItems.forEach((item) => {
+                const orig = item.original;
+                const newLeft = parseFloat(item.wrapper.style.left);
+                const newTop = parseFloat(item.wrapper.style.top);
+                const newW = parseFloat(item.wrapper.style.width);
+                const newH = parseFloat(item.wrapper.style.height);
+
+                const diffs = [];
+                const dx = Math.round(newLeft - orig.left);
+                const dy = Math.round(newTop - orig.top);
+                const dw = Math.round(newW - orig.width);
+                const dh = Math.round(newH - orig.height);
+
+                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+                    diffs.push(`移动: x${dx > 0 ? '+' : ''}${dx}px, y${dy > 0 ? '+' : ''}${dy}px`);
+                }
+                if (Math.abs(dw) > 2 || Math.abs(dh) > 2) {
+                    diffs.push(`缩放: ${Math.round(orig.width)}×${Math.round(orig.height)} → ${Math.round(newW)}×${Math.round(newH)}`);
+                }
+                if (item.textChanged !== null) {
+                    diffs.push(`文字改为: "${item.textChanged}"`);
+                }
+
+                if (diffs.length > 0) {
+                    changes.push({
+                        selector: orig.selector,
+                        classNames: orig.classNames,
+                        text: orig.text,
+                        changes: diffs,
+                        newPosition: { left: Math.round(newLeft), top: Math.round(newTop) },
+                        newSize: { width: Math.round(newW), height: Math.round(newH) },
+                        originalPosition: { left: Math.round(orig.left), top: Math.round(orig.top) },
+                        originalSize: { width: Math.round(orig.width), height: Math.round(orig.height) },
+                        newText: item.textChanged
+                    });
+                }
+            });
+
+            editor.remove();
+
+            if (changes.length === 0) {
+                // 没有变更，直接打开普通对话框
+                selectAndOpenDialog(containerEl);
+                return;
+            }
+
+            // 生成可视化变更描述
+            let desc = '根据可视化编辑结果，请做以下调整：\n\n';
+            changes.forEach((c, i) => {
+                desc += `### 元素 ${i + 1}: \`${c.classNames || c.selector}\`\n`;
+                if (c.text) desc += `（文本: "${c.text}"）\n`;
+                c.changes.forEach(d => { desc += `- ${d}\n`; });
+                desc += '\n';
+            });
+
+            // 打开对话框，预填可视化变更
+            selectAndOpenDialog(containerEl, { description: desc, changes });
+        });
+
+        // ESC 关闭
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                editor.remove();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
     }
 
     // ========== 子元素选择面板（半透明可拖拽 + 多选）==========
@@ -459,6 +777,11 @@
             background: rgba(49, 50, 68, 0.6);
         `;
         footer.innerHTML = `
+            <button id="__picker-visual-edit" style="
+                padding:6px 16px; border:1px solid #f59e0b; background:transparent;
+                color:#f59e0b; border-radius:8px; cursor:pointer; font-size:12px;
+                font-family:'Segoe UI',sans-serif; transition:all 0.2s; margin-right:auto;
+            ">🎨 可视化编辑</button>
             <button id="__picker-cancel-multi" style="
                 padding:6px 16px; border:1px solid #45475a; background:transparent;
                 color:#cdd6f4; border-radius:8px; cursor:pointer; font-size:12px;
@@ -521,6 +844,12 @@
             } else {
                 selectAndOpenDialog(selected);
             }
+        });
+
+        // 可视化编辑按钮
+        document.getElementById('__picker-visual-edit').addEventListener('click', () => {
+            closePanel();
+            showVisualEditor(containerEl, childElements);
         });
     }
 

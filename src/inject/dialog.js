@@ -331,7 +331,8 @@
                 identifiers: currentElementInfo.identifiers || null,
                 referenceImage: imageBase64,
                 elementScreenshot: currentElementInfo.elementScreenshot || null,
-                pageUrl: currentElementInfo.pageUrl
+                pageUrl: currentElementInfo.pageUrl,
+                visualChanges: currentElementInfo.visualChanges || null
             };
 
             // 发送到代理服务器
@@ -370,9 +371,13 @@
             btn.disabled = false;
         }
 
-        // 聚焦描述输入框
+        // 聚焦描述输入框，如果有可视化变更则预填
         setTimeout(() => {
-            document.getElementById('__dialog-description').focus();
+            const ta = document.getElementById('__dialog-description');
+            if (currentElementInfo.visualChanges && currentElementInfo.visualChanges.description) {
+                ta.value = currentElementInfo.visualChanges.description;
+            }
+            ta.focus();
         }, 300);
     }
 

@@ -259,6 +259,7 @@ async function handleModifyRequest(data: {
     identifiers?: Record<string, string> | null;
     referenceImage?: string;
     elementScreenshot?: string;
+    visualChanges?: { description: string; changes: any[] } | null;
     pageUrl: string;
 }) {
     const projectHint = await getProjectHint();
@@ -311,6 +312,25 @@ async function handleModifyRequest(data: {
 
     if (data.computedStyles) {
         prompt += `**当前计算样式**（仅供参考，请修改源码中的类名/样式）:\n\`\`\`css\n${data.computedStyles}\n\`\`\`\n\n`;
+    }
+
+    // 可视化编辑变更
+    if (data.visualChanges?.changes?.length) {
+        prompt += `\n## 可视化编辑结果\n`;
+        prompt += `用户通过拖拽/缩放直接调整了元素布局，请按以下参数修改：\n\n`;
+        for (const c of data.visualChanges.changes) {
+            prompt += `**元素**: \`${c.classNames || c.selector}\``;
+            if (c.text) { prompt += ` (文本: "${c.text}")`; }
+            prompt += `\n`;
+            for (const d of c.changes) { prompt += `- ${d}\n`; }
+            if (c.newPosition && c.originalPosition) {
+                prompt += `- 原始位置: (${c.originalPosition.left}, ${c.originalPosition.top}) → 新位置: (${c.newPosition.left}, ${c.newPosition.top})\n`;
+            }
+            if (c.newSize && c.originalSize) {
+                prompt += `- 原始尺寸: ${c.originalSize.width}×${c.originalSize.height} → 新尺寸: ${c.newSize.width}×${c.newSize.height}\n`;
+            }
+            prompt += `\n`;
+        }
     }
 
     // 规则
