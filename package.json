@@ -2,7 +2,7 @@
   "name": "web-element-picker",
   "displayName": "Web Element Picker",
   "description": "代理任意 Web 服务，选择元素并发送修改请求到 Chat",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
