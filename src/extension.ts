@@ -189,6 +189,62 @@ async function handleUndoRequest() {
     }
 }
 
+// ========== 项目信息缓存 ==========
+let cachedProjectHint: string | null = null;
+
+async function getProjectHint(): Promise<string> {
+    if (cachedProjectHint !== null) { return cachedProjectHint; }
+
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders?.length) { cachedProjectHint = ''; return ''; }
+
+    try {
+        const pkgFiles = await vscode.workspace.findFiles('package.json', '**/node_modules/**', 1);
+        if (!pkgFiles.length) { cachedProjectHint = ''; return ''; }
+
+        const pkgContent = await vscode.workspace.fs.readFile(pkgFiles[0]);
+        const pkg = JSON.parse(Buffer.from(pkgContent).toString('utf-8'));
+        const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+        const parts: string[] = [];
+
+        // 检测框架
+        if (allDeps['next']) { parts.push(`Next.js ${allDeps['next'].replace('^', '')}`); }
+        else if (allDeps['nuxt']) { parts.push('Nuxt'); }
+        else if (allDeps['vue']) { parts.push('Vue'); }
+        else if (allDeps['react']) { parts.push('React'); }
+        else if (allDeps['svelte']) { parts.push('Svelte'); }
+        else if (allDeps['@angular/core']) { parts.push('Angular'); }
+        else if (allDeps['astro']) { parts.push('Astro'); }
+
+        // 检测 UI 框架
+        if (allDeps['tailwindcss']) { parts.push('Tailwind CSS'); }
+        if (allDeps['antd']) { parts.push('Ant Design'); }
+        if (allDeps['@mui/material']) { parts.push('MUI'); }
+        if (allDeps['element-plus']) { parts.push('Element Plus'); }
+
+        // 检测目录结构
+        const dirChecks = [
+            { pattern: 'src/app/**', label: 'src/app/' },
+            { pattern: 'src/pages/**', label: 'src/pages/' },
+            { pattern: 'src/components/**', label: 'src/components/' },
+            { pattern: 'app/**', label: 'app/' },
+            { pattern: 'components/**', label: 'components/' },
+        ];
+        const dirs: string[] = [];
+        for (const check of dirChecks) {
+            const found = await vscode.workspace.findFiles(check.pattern, '**/node_modules/**', 1);
+            if (found.length) { dirs.push(check.label); }
+        }
+        if (dirs.length) { parts.push(`目录: ${dirs.join(', ')}`); }
+
+        cachedProjectHint = parts.join(' + ');
+    } catch {
+        cachedProjectHint = '';
+    }
+    return cachedProjectHint;
+}
+
 // ========== 处理修改请求 ==========
 async function handleModifyRequest(data: {
     selector: string;
@@ -197,92 +253,108 @@ async function handleModifyRequest(data: {
     description: string;
     directText?: string;
     childSummary?: string;
+    classNames?: string;
+    ancestorChain?: string;
+    frameworkInfo?: { framework: string | null; componentName: string | null } | null;
+    identifiers?: Record<string, string> | null;
     referenceImage?: string;
     elementScreenshot?: string;
     pageUrl: string;
 }) {
-    // 构造 prompt
-    let prompt = `请修改以下前端元素。\n\n`;
-    prompt += `## 目标定位\n`;
-    prompt += `- **页面 URL**: ${data.pageUrl}\n`;
-    prompt += `- **CSS 选择器**: \`${data.selector}\`\n`;
+    const projectHint = await getProjectHint();
+
+    // 构造 prompt — 按 AI 定位源文件的优先级排序
+    let prompt = `## 修改要求\n${data.description}\n`;
+
+    // 元素定位信息（最重要）
+    prompt += `\n## 元素定位（用这些信息在源码中找到对应文件）\n`;
+
+    if (data.frameworkInfo?.componentName) {
+        prompt += `- **组件名**: ${data.frameworkInfo.componentName} (${data.frameworkInfo.framework})\n`;
+    } else if (data.frameworkInfo?.framework) {
+        prompt += `- **框架**: ${data.frameworkInfo.framework}\n`;
+    }
+
+    if (data.classNames) {
+        prompt += `- **CSS 类名**: \`${data.classNames}\`\n`;
+    }
+
+    if (data.identifiers) {
+        const idStr = Object.entries(data.identifiers).map(([k, v]) => `${k}="${v}"`).join(', ');
+        prompt += `- **标识属性**: ${idStr}\n`;
+    }
 
     if (data.directText) {
-        prompt += `- **元素文本内容**: "${data.directText}"\n`;
+        prompt += `- **文本内容**: "${data.directText}"\n`;
     }
 
-    prompt += `\n## 元素当前状态\n`;
-    prompt += `**HTML 结构**:\n\`\`\`html\n${data.outerHTML}\n\`\`\`\n\n`;
+    prompt += `- **CSS 选择器**: \`${data.selector}\`\n`;
+    prompt += `- **页面 URL**: ${data.pageUrl}\n`;
+
+    // 项目信息
+    if (projectHint) {
+        prompt += `\n## 项目信息\n${projectHint}\n`;
+    }
+
+    // 结构上下文
+    prompt += `\n## 结构上下文\n`;
+
+    if (data.ancestorChain) {
+        prompt += `**父级链**: ${data.ancestorChain}\n\n`;
+    }
+
+    prompt += `**HTML**:\n\`\`\`html\n${data.outerHTML}\n\`\`\`\n\n`;
+
+    if (data.childSummary) {
+        prompt += `**子元素**:\n\`\`\`\n${data.childSummary}\n\`\`\`\n\n`;
+    }
 
     if (data.computedStyles) {
-        prompt += `**计算样式**:\n\`\`\`css\n${data.computedStyles}\n\`\`\`\n\n`;
+        prompt += `**当前计算样式**（仅供参考，请修改源码中的类名/样式）:\n\`\`\`css\n${data.computedStyles}\n\`\`\`\n\n`;
     }
 
-    prompt += `## 修改要求\n${data.description}\n`;
-    prompt += `\n## 重要规则\n`;
-    prompt += `1. 只修改上述 CSS 选择器精确匹配的那个元素\n`;
-    prompt += `2. 不要修改其父元素或兄弟元素\n`;
-    prompt += `3. 除非修改要求明确提到子元素，否则不要改动子元素\n`;
-    prompt += `4. 在源代码文件中找到对应的组件/模板进行修改，不要用内联样式覆盖\n`;
+    // 规则
+    prompt += `## 规则\n`;
+    prompt += `1. 用上面的组件名、类名或文本内容在源码中 grep 定位文件\n`;
+    prompt += `2. 修改源码（JSX/Vue模板/CSS/Tailwind类名），不要用内联样式\n`;
+    prompt += `3. 只改目标元素，不动父/兄弟/子元素（除非明确要求）\n`;
 
     if (data.referenceImage) {
-        prompt += `\n[用户提供了参考图片]\n`;
         const fs = require('fs');
         const path = require('path');
         const tmpDir = require('os').tmpdir();
         const imgPath = path.join(tmpDir, `web-picker-ref-${Date.now()}.png`);
-        const base64Data = data.referenceImage.replace(
-            /^data:image\/\w+;base64,/,
-            ''
-        );
+        const base64Data = data.referenceImage.replace(/^data:image\/\w+;base64,/, '');
         fs.writeFileSync(imgPath, base64Data, 'base64');
-        prompt += `参考图片已保存到: ${imgPath}\n`;
+        prompt += `\n[参考图片]: ${imgPath}\n`;
     }
 
     if (data.elementScreenshot) {
         const fs = require('fs');
         const path = require('path');
         const tmpDir = require('os').tmpdir();
-        const shotPath = path.join(
-            tmpDir,
-            `web-picker-shot-${Date.now()}.png`
-        );
-        const base64Data = data.elementScreenshot.replace(
-            /^data:image\/\w+;base64,/,
-            ''
-        );
+        const shotPath = path.join(tmpDir, `web-picker-shot-${Date.now()}.png`);
+        const base64Data = data.elementScreenshot.replace(/^data:image\/\w+;base64,/, '');
         fs.writeFileSync(shotPath, base64Data, 'base64');
-        prompt += `\n元素截图已保存到: ${shotPath}\n`;
+        prompt += `\n[元素截图]: ${shotPath}\n`;
     }
 
     // 发送到 Antigravity Agent Panel
     let sent = false;
-
-    // 方式1: 直接发送到 Antigravity Agent Panel
     try {
-        await vscode.commands.executeCommand(
-            'antigravity.sendPromptToAgentPanel',
-            prompt
-        );
+        await vscode.commands.executeCommand('antigravity.sendPromptToAgentPanel', prompt);
         sent = true;
-        vscode.window.showInformationMessage(
-            '✅ 修改请求已发送到 Antigravity Chat'
-        );
+        vscode.window.showInformationMessage('✅ 修改请求已发送到 Antigravity Chat');
     } catch (e) {
         console.log('antigravity.sendPromptToAgentPanel failed:', e);
     }
 
-    // 方式2: fallback — 复制到剪贴板 + 聚焦面板
     if (!sent) {
         await vscode.env.clipboard.writeText(prompt);
         try {
             await vscode.commands.executeCommand('antigravity.agentSidePanel.focus');
-        } catch {
-            // ignore
-        }
-        vscode.window.showWarningMessage(
-            '修改请求已复制到剪贴板，请在 Antigravity Chat 中 Ctrl+V 粘贴'
-        );
+        } catch { /* ignore */ }
+        vscode.window.showWarningMessage('修改请求已复制到剪贴板，请在 Antigravity Chat 中 Ctrl+V 粘贴');
     }
 }
 

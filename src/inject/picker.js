@@ -484,10 +484,102 @@
             textContent: (el.textContent || '').substring(0, 300),
             directText: getDirectText(el),
             childSummary: getChildSummary(el),
+            classNames: el.className && typeof el.className === 'string' ? el.className.trim() : '',
+            ancestorChain: getAncestorChain(el, 3),
+            frameworkInfo: detectFrameworkInfo(el),
+            identifiers: getIdentifierAttributes(el),
             rect: el.getBoundingClientRect(),
             pageUrl: window.location.href,
-            elementScreenshot: null // 由截图函数异步填充
+            elementScreenshot: null
         };
+    }
+
+    // 向上获取祖先链（tag + id + class）
+    function getAncestorChain(el, levels) {
+        const chain = [];
+        let current = el.parentElement;
+        while (current && current !== document.body && current !== document.documentElement && chain.length < levels) {
+            const tag = current.tagName.toLowerCase();
+            const id = current.id && !current.id.startsWith('__') ? '#' + current.id : '';
+            const cls = current.className && typeof current.className === 'string'
+                ? '.' + current.className.split(' ').filter(Boolean).slice(0, 3).join('.')
+                : '';
+            chain.push(tag + id + cls);
+            current = current.parentElement;
+        }
+        return chain.reverse().join(' > ');
+    }
+
+    // 检测前端框架和组件名
+    function detectFrameworkInfo(el) {
+        const result = { framework: null, componentName: null };
+        try {
+            // React
+            const reactKey = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+            if (reactKey) {
+                result.framework = 'react';
+                let fiber = el[reactKey];
+                // 沿 fiber.return 向上找有 name 的组件（跳过 Host/DOM 节点）
+                for (let i = 0; i < 10 && fiber; i++) {
+                    if (fiber.type && typeof fiber.type === 'function') {
+                        const name = fiber.type.displayName || fiber.type.name;
+                        if (name && name !== 'Anonymous' && !name.startsWith('_')) {
+                            result.componentName = name;
+                            break;
+                        }
+                    }
+                    fiber = fiber.return;
+                }
+                return result;
+            }
+
+            // Vue 3
+            const vueKey = Object.keys(el).find(k => k.startsWith('__vueParentComponent'));
+            if (vueKey || el.__vueParentComponent) {
+                result.framework = 'vue';
+                const comp = el.__vueParentComponent || el[vueKey];
+                if (comp && comp.type) {
+                    result.componentName = comp.type.name || comp.type.__name || null;
+                }
+                return result;
+            }
+
+            // Vue 2
+            if (el.__vue__) {
+                result.framework = 'vue';
+                result.componentName = el.__vue__.$options.name || el.__vue__.$options._componentTag || null;
+                return result;
+            }
+
+            // Angular
+            const ngKey = Object.keys(el).find(k => k.startsWith('__ng'));
+            if (ngKey) {
+                result.framework = 'angular';
+                return result;
+            }
+
+            // Svelte
+            if (el.__svelte_meta) {
+                result.framework = 'svelte';
+                return result;
+            }
+        } catch (e) {
+            console.warn('[Picker] Framework detection error:', e);
+        }
+        return result;
+    }
+
+    // 提取稳定标识属性
+    function getIdentifierAttributes(el) {
+        const attrs = {};
+        const keys = ['data-testid', 'data-cy', 'data-test', 'data-id', 'role', 'aria-label', 'aria-labelledby', 'name', 'id'];
+        keys.forEach(k => {
+            const v = el.getAttribute(k);
+            if (v && !v.startsWith('__picker') && !v.startsWith('__dialog')) {
+                attrs[k] = v;
+            }
+        });
+        return Object.keys(attrs).length > 0 ? attrs : null;
     }
 
     // 智能 HTML：如果子元素太多，只返回开标签 + 直接子元素摘要

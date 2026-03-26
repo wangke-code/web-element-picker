@@ -15,14 +15,14 @@
 
     // 快捷标签（常见修改类型）
     const quickTags = [
-        { label: '🎨 改颜色', text: '修改颜色为' },
-        { label: '📐 改尺寸', text: '修改宽高尺寸为' },
-        { label: '✏️ 改文字', text: '修改文字内容为' },
-        { label: '📦 改布局', text: '修改布局方式为' },
-        { label: '🔤 改字体', text: '修改字体为' },
-        { label: '🔲 改边框', text: '修改边框样式为' },
-        { label: '📱 响应式', text: '让此元素在移动端自适应' },
-        { label: '✨ 加动画', text: '添加动画效果：' },
+        { label: '🎨 颜色/背景', text: '修改此元素的颜色/背景色为 ' },
+        { label: '📐 间距', text: '调整此元素的 padding/margin 为 ' },
+        { label: '✏️ 改文字', text: '将文字内容改为 ' },
+        { label: '📦 Flex布局', text: '将此元素改为 flex 布局，' },
+        { label: '🔲 圆角/边框', text: '修改边框圆角为 ' },
+        { label: '👻 隐藏', text: '隐藏此元素（display:none）' },
+        { label: '📱 响应式', text: '让此元素在移动端（<768px）自适应，' },
+        { label: '🗑️ 删除', text: '从页面中删除此元素' },
     ];
 
     function openDialog(elementInfo) {
@@ -315,6 +315,10 @@
                 description: description,
                 directText: currentElementInfo.directText || '',
                 childSummary: currentElementInfo.childSummary || '',
+                classNames: currentElementInfo.classNames || '',
+                ancestorChain: currentElementInfo.ancestorChain || '',
+                frameworkInfo: currentElementInfo.frameworkInfo || null,
+                identifiers: currentElementInfo.identifiers || null,
                 referenceImage: imageBase64,
                 elementScreenshot: currentElementInfo.elementScreenshot || null,
                 pageUrl: currentElementInfo.pageUrl
