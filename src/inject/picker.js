@@ -241,156 +241,285 @@
         selectAndOpenDialog(target);
     }, true);
 
-    // ========== 选中元素并打开对话框 ==========
-    function selectAndOpenDialog(el) {
-        const info = getElementInfo(el);
-        captureElementScreenshot(el).then((screenshot) => {
-            info.elementScreenshot = screenshot;
+    // ========== 选中元素并打开对话框（支持多选）==========
+    function selectAndOpenDialog(elOrEls) {
+        const elements = Array.isArray(elOrEls) ? elOrEls : [elOrEls];
+        if (elements.length === 1) {
+            const info = getElementInfo(elements[0]);
+            captureElementScreenshot(elements[0]).then((screenshot) => {
+                info.elementScreenshot = screenshot;
+                if (window.__webPickerDialog) {
+                    window.__webPickerDialog.open(info);
+                }
+            });
+        } else {
+            // 多选：合并信息
+            const infos = elements.map(el => getElementInfo(el));
+            const merged = {
+                selector: infos.map(i => i.selector).join(', '),
+                outerHTML: infos.map(i => i.outerHTML).join('\n\n'),
+                computedStyles: infos[0].computedStyles,
+                tagName: infos.map(i => i.tagName).join(', '),
+                textContent: infos.map(i => i.textContent).join(' | '),
+                directText: infos.map(i => i.directText).filter(Boolean).join(' | '),
+                childSummary: '',
+                classNames: [...new Set(infos.map(i => i.classNames).filter(Boolean))].join(' | '),
+                ancestorChain: infos[0].ancestorChain,
+                frameworkInfo: infos[0].frameworkInfo,
+                identifiers: infos[0].identifiers,
+                rect: infos[0].rect,
+                pageUrl: infos[0].pageUrl,
+                elementScreenshot: null,
+                multiSelect: true,
+                selectedCount: elements.length
+            };
             if (window.__webPickerDialog) {
-                window.__webPickerDialog.open(info);
+                window.__webPickerDialog.open(merged);
             }
-        });
+        }
     }
 
-    // ========== 子元素选择面板 ==========
+    // ========== 子元素选择面板（半透明可拖拽 + 多选）==========
     function showSubElementPanel(containerEl) {
-        // 移除旧面板
         const old = document.getElementById('__picker-subpanel');
         if (old) old.remove();
 
+        // 不再用全屏遮罩，直接浮动面板
         const panel = document.createElement('div');
         panel.id = '__picker-subpanel';
         panel.style.cssText = `
-            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.5); z-index: 2147483645;
-            display: flex; align-items: center; justify-content: center;
-            backdrop-filter: blur(4px);
-        `;
-
-        const box = document.createElement('div');
-        box.style.cssText = `
-            background: #1e1e2e; border-radius: 16px; padding: 24px;
-            width: 600px; max-width: 92vw; max-height: 80vh;
-            overflow-y: auto; box-shadow: 0 24px 80px rgba(0,0,0,0.4);
+            position: fixed; top: 60px; right: 24px;
+            width: 420px; max-width: 90vw; max-height: 75vh;
+            background: rgba(30, 30, 46, 0.92); backdrop-filter: blur(12px);
+            border-radius: 16px; padding: 0;
+            overflow: hidden; box-shadow: 0 16px 60px rgba(0,0,0,0.5);
             color: #cdd6f4; font-family: 'Segoe UI', system-ui, sans-serif;
+            z-index: 2147483645; border: 1px solid rgba(99,102,241,0.3);
+            cursor: default;
         `;
 
-        // 标题
+        // 可拖拽标题栏
         const header = document.createElement('div');
-        header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;';
+        header.style.cssText = `
+            display:flex; justify-content:space-between; align-items:center;
+            padding: 14px 18px; cursor: move; user-select: none;
+            background: rgba(49, 50, 68, 0.8); border-bottom: 1px solid #45475a;
+        `;
         header.innerHTML = `
-            <h3 style="margin:0;font-size:16px;color:#cba6f7;">选择要修改的元素</h3>
-            <button id="__picker-subpanel-close" style="background:none;border:none;color:#6c7086;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:6px;">✕</button>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:14px;font-weight:600;color:#cba6f7;">选择元素</span>
+                <span id="__picker-select-count" style="font-size:11px;color:#6c7086;background:#313244;padding:2px 8px;border-radius:10px;">0 已选</span>
+            </div>
+            <button id="__picker-subpanel-close" style="background:none;border:none;color:#6c7086;font-size:18px;cursor:pointer;padding:2px 6px;border-radius:4px;">✕</button>
         `;
-        box.appendChild(header);
+        panel.appendChild(header);
 
-        // "选择整个容器" 按钮
-        const containerBtn = document.createElement('div');
+        // 拖拽逻辑
+        let isDragging = false, dragX = 0, dragY = 0;
+        header.addEventListener('mousedown', (e) => {
+            if (e.target.tagName === 'BUTTON') return;
+            isDragging = true;
+            dragX = e.clientX - panel.offsetLeft;
+            dragY = e.clientY - panel.offsetTop;
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            panel.style.left = (e.clientX - dragX) + 'px';
+            panel.style.top = (e.clientY - dragY) + 'px';
+            panel.style.right = 'auto';
+        });
+        document.addEventListener('mouseup', () => { isDragging = false; });
+
+        // 内容区域（可滚动）
+        const content = document.createElement('div');
+        content.style.cssText = 'padding: 12px 18px; overflow-y: auto; max-height: calc(75vh - 110px);';
+
+        // 多选状态
+        const selectedSet = new Set();
+        const childElements = [];
+
+        function updateCount() {
+            const countEl = document.getElementById('__picker-select-count');
+            if (countEl) countEl.textContent = `${selectedSet.size} 已选`;
+            // 确认按钮状态
+            const confirmBtn = document.getElementById('__picker-confirm-multi');
+            if (confirmBtn) {
+                confirmBtn.style.opacity = selectedSet.size > 0 ? '1' : '0.4';
+                confirmBtn.style.pointerEvents = selectedSet.size > 0 ? 'auto' : 'none';
+            }
+        }
+
+        // "选择整个容器" 行
         const containerTag = containerEl.tagName.toLowerCase();
-        const containerText = (containerEl.textContent || '').substring(0, 40).trim();
-        containerBtn.style.cssText = `
-            padding: 10px 14px; margin-bottom: 12px; background: #313244;
-            border: 2px solid #6366f1; border-radius: 10px; cursor: pointer;
-            transition: all 0.2s; display: flex; align-items: center; gap: 10px;
+        const containerCls = containerEl.className && typeof containerEl.className === 'string'
+            ? '.' + containerEl.className.split(' ').filter(Boolean).slice(0, 2).join('.') : '';
+        const containerRow = document.createElement('div');
+        containerRow.style.cssText = `
+            padding: 8px 12px; margin-bottom: 8px; background: rgba(99,102,241,0.1);
+            border: 1px solid rgba(99,102,241,0.3); border-radius: 8px; cursor: pointer;
+            transition: all 0.2s; display: flex; align-items: center; gap: 8px;
         `;
-        containerBtn.innerHTML = `
-            <span style="background:#6366f1;color:white;padding:2px 8px;border-radius:4px;font-size:11px;font-family:monospace;">${containerTag}</span>
-            <span style="font-size:13px;color:#a6adc8;">整个容器</span>
-            <span style="font-size:12px;color:#6c7086;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px;">${containerText}</span>
+        containerRow.innerHTML = `
+            <span style="background:#6366f1;color:white;padding:2px 8px;border-radius:4px;font-size:11px;font-family:monospace;">${containerTag}${containerCls}</span>
+            <span style="font-size:12px;color:#a6adc8;">整个容器</span>
         `;
-        containerBtn.addEventListener('mouseenter', () => {
-            containerBtn.style.background = '#45475a';
-            highlightElement(containerEl);
-        });
-        containerBtn.addEventListener('mouseleave', () => {
-            containerBtn.style.background = '#313244';
-            overlayBox.style.display = 'none';
-            labelBox.style.display = 'none';
-        });
-        containerBtn.addEventListener('click', () => {
-            panel.remove();
-            overlayBox.style.display = 'none';
-            labelBox.style.display = 'none';
+        containerRow.addEventListener('mouseenter', () => highlightElement(containerEl));
+        containerRow.addEventListener('mouseleave', () => { overlayBox.style.display = 'none'; labelBox.style.display = 'none'; });
+        containerRow.addEventListener('click', () => {
+            closePanel();
             selectAndOpenDialog(containerEl);
         });
-        box.appendChild(containerBtn);
+        content.appendChild(containerRow);
 
-        // 分割线
-        const divider = document.createElement('div');
-        divider.style.cssText = 'height:1px;background:#45475a;margin:12px 0;';
-        box.appendChild(divider);
+        // 分割线 + 子元素标题
+        const subHeader = document.createElement('div');
+        subHeader.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin:10px 0 8px;';
+        subHeader.innerHTML = `
+            <span style="font-size:11px;color:#6c7086;">子元素 (${containerEl.children.length})</span>
+            <label style="font-size:11px;color:#89b4fa;cursor:pointer;user-select:none;" id="__picker-select-all">全选</label>
+        `;
+        content.appendChild(subHeader);
 
-        // 子元素标题
-        const subTitle = document.createElement('div');
-        subTitle.style.cssText = 'font-size:12px;color:#a6adc8;margin-bottom:10px;';
-        subTitle.textContent = `子元素 (${containerEl.children.length} 个)`;
-        box.appendChild(subTitle);
-
-        // 列出所有子元素
+        // 子元素列表
         const children = Array.from(containerEl.children);
         children.forEach((child, i) => {
             if (isPickerElement(child)) return;
+            childElements.push(child);
 
-            const item = document.createElement('div');
             const tag = child.tagName.toLowerCase();
             const cls = child.className && typeof child.className === 'string'
-                ? '.' + child.className.split(' ').filter(Boolean).slice(0, 2).join('.')
-                : '';
-            const text = (child.textContent || '').substring(0, 60).trim();
+                ? '.' + child.className.split(' ').filter(Boolean).slice(0, 2).join('.') : '';
+            const text = (child.textContent || '').substring(0, 50).trim();
             const rect = child.getBoundingClientRect();
             const dims = `${Math.round(rect.width)}×${Math.round(rect.height)}`;
 
+            const item = document.createElement('div');
             item.style.cssText = `
-                padding: 8px 14px; margin-bottom: 4px; background: #181825;
-                border: 1px solid #313244; border-radius: 8px; cursor: pointer;
-                transition: all 0.2s; display: flex; align-items: center; gap: 8px;
-            `;
-            item.innerHTML = `
-                <span style="color:#6c7086;font-size:11px;min-width:20px;">${i + 1}</span>
-                <span style="background:#45475a;color:#cdd6f4;padding:2px 6px;border-radius:3px;font-size:11px;font-family:monospace;">${tag}${cls}</span>
-                <span style="font-size:12px;color:#a6adc8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${text || '(空)'}</span>
-                <span style="font-size:11px;color:#585b70;">${dims}</span>
+                padding: 6px 10px; margin-bottom: 3px; background: transparent;
+                border: 1px solid transparent; border-radius: 6px; cursor: pointer;
+                transition: all 0.15s; display: flex; align-items: center; gap: 8px;
+                font-size: 12px;
             `;
 
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.style.cssText = 'accent-color: #6366f1; cursor: pointer; flex-shrink: 0;';
+
+            const label = document.createElement('div');
+            label.style.cssText = 'display:flex;align-items:center;gap:6px;flex:1;overflow:hidden;';
+            label.innerHTML = `
+                <span style="color:#6c7086;font-size:10px;min-width:16px;">${i + 1}</span>
+                <span style="background:#313244;color:#cdd6f4;padding:1px 5px;border-radius:3px;font-size:10px;font-family:monospace;white-space:nowrap;">${tag}${cls}</span>
+                <span style="color:#a6adc8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${text || '(空)'}</span>
+                <span style="color:#585b70;font-size:10px;white-space:nowrap;">${dims}</span>
+            `;
+
+            item.appendChild(checkbox);
+            item.appendChild(label);
+
+            // 悬停高亮
             item.addEventListener('mouseenter', () => {
-                item.style.background = '#313244';
-                item.style.borderColor = '#6366f1';
+                item.style.background = 'rgba(99,102,241,0.08)';
+                item.style.borderColor = 'rgba(99,102,241,0.2)';
                 highlightElement(child);
             });
             item.addEventListener('mouseleave', () => {
-                item.style.background = '#181825';
-                item.style.borderColor = '#313244';
+                item.style.background = checkbox.checked ? 'rgba(99,102,241,0.1)' : 'transparent';
+                item.style.borderColor = checkbox.checked ? 'rgba(99,102,241,0.3)' : 'transparent';
                 overlayBox.style.display = 'none';
                 labelBox.style.display = 'none';
             });
-            item.addEventListener('click', () => {
-                panel.remove();
-                overlayBox.style.display = 'none';
-                labelBox.style.display = 'none';
-                // 如果这个子元素还有子元素，继续展开
-                if (child.children.length > 1) {
-                    showSubElementPanel(child);
+
+            // 点击行 = 切换选中
+            item.addEventListener('click', (e) => {
+                if (e.target !== checkbox) checkbox.checked = !checkbox.checked;
+                if (checkbox.checked) {
+                    selectedSet.add(i);
+                    item.style.background = 'rgba(99,102,241,0.1)';
+                    item.style.borderColor = 'rgba(99,102,241,0.3)';
                 } else {
-                    selectAndOpenDialog(child);
+                    selectedSet.delete(i);
+                    item.style.background = 'transparent';
+                    item.style.borderColor = 'transparent';
                 }
+                updateCount();
             });
-            box.appendChild(item);
+
+            content.appendChild(item);
         });
 
-        panel.appendChild(box);
+        panel.appendChild(content);
+
+        // 底部操作栏
+        const footer = document.createElement('div');
+        footer.style.cssText = `
+            padding: 12px 18px; border-top: 1px solid #45475a;
+            display: flex; justify-content: flex-end; gap: 8px;
+            background: rgba(49, 50, 68, 0.6);
+        `;
+        footer.innerHTML = `
+            <button id="__picker-cancel-multi" style="
+                padding:6px 16px; border:1px solid #45475a; background:transparent;
+                color:#cdd6f4; border-radius:8px; cursor:pointer; font-size:12px;
+                font-family:'Segoe UI',sans-serif; transition:all 0.2s;
+            ">取消</button>
+            <button id="__picker-confirm-multi" style="
+                padding:6px 16px; border:none;
+                background:linear-gradient(135deg,#6366f1,#8b5cf6);
+                color:white; border-radius:8px; cursor:pointer; font-size:12px;
+                font-weight:600; font-family:'Segoe UI',sans-serif;
+                opacity:0.4; pointer-events:none; transition:all 0.2s;
+            ">确认选择 →</button>
+        `;
+        panel.appendChild(footer);
+
         document.body.appendChild(panel);
 
-        // 关闭事件
-        document.getElementById('__picker-subpanel-close').addEventListener('click', () => {
+        // 事件绑定
+        function closePanel() {
             panel.remove();
             overlayBox.style.display = 'none';
             labelBox.style.display = 'none';
+        }
+
+        document.getElementById('__picker-subpanel-close').addEventListener('click', closePanel);
+        document.getElementById('__picker-cancel-multi').addEventListener('click', closePanel);
+
+        // 全选
+        document.getElementById('__picker-select-all').addEventListener('click', () => {
+            const allSelected = selectedSet.size === childElements.length;
+            const checkboxes = content.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach((cb, idx) => {
+                cb.checked = !allSelected;
+                const row = cb.parentElement;
+                if (!allSelected) {
+                    selectedSet.add(idx);
+                    row.style.background = 'rgba(99,102,241,0.1)';
+                    row.style.borderColor = 'rgba(99,102,241,0.3)';
+                } else {
+                    selectedSet.delete(idx);
+                    row.style.background = 'transparent';
+                    row.style.borderColor = 'transparent';
+                }
+            });
+            document.getElementById('__picker-select-all').textContent = allSelected ? '全选' : '取消全选';
+            updateCount();
         });
-        panel.addEventListener('click', (e) => {
-            if (e.target === panel) {
-                panel.remove();
-                overlayBox.style.display = 'none';
-                labelBox.style.display = 'none';
+
+        // 确认多选
+        document.getElementById('__picker-confirm-multi').addEventListener('click', () => {
+            const selected = [...selectedSet].sort().map(idx => childElements[idx]);
+            closePanel();
+            if (selected.length === 1) {
+                // 单选且有子元素 → 继续展开
+                if (selected[0].children.length > 1) {
+                    showSubElementPanel(selected[0]);
+                } else {
+                    selectAndOpenDialog(selected[0]);
+                }
+            } else {
+                selectAndOpenDialog(selected);
             }
         });
     }
