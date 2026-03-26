@@ -33,32 +33,60 @@
             dialogContainer.remove();
         }
 
-        // 创建遮罩 + 对话框
+        // 创建浮动对话框（无遮罩，半透明可拖拽）
         dialogContainer = document.createElement('div');
         dialogContainer.id = '__dialog-container';
         dialogContainer.style.cssText = `
-            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.5);
-            z-index: 2147483645;
-            display: flex; align-items: center; justify-content: center;
-            backdrop-filter: blur(4px);
-            animation: __dialogFadeIn 0.25s ease;
+            position: fixed; top: 80px; right: 24px;
+            width: 480px; max-width: 90vw; max-height: 85vh;
+            background: rgba(30, 30, 46, 0.92); backdrop-filter: blur(12px);
+            border-radius: 16px; overflow: hidden;
+            box-shadow: 0 16px 60px rgba(0,0,0,0.5);
+            color: #cdd6f4; font-family: 'Segoe UI', system-ui, sans-serif;
+            z-index: 2147483645; border: 1px solid rgba(99,102,241,0.3);
+            animation: __dialogSlideUp 0.3s cubic-bezier(0.4,0,0.2,1);
         `;
 
+        // 可拖拽标题栏
+        const dragHeader = document.createElement('div');
+        dragHeader.style.cssText = `
+            display:flex; justify-content:space-between; align-items:center;
+            padding: 14px 20px; cursor: move; user-select: none;
+            background: rgba(49, 50, 68, 0.8); border-bottom: 1px solid #45475a;
+        `;
+        dragHeader.innerHTML = `
+            <h3 style="margin:0; font-size:15px; color:#cba6f7; font-weight:600;">✏️ 修改元素</h3>
+            <button id="__dialog-close" style="
+                background:none; border:none; color:#6c7086; font-size:18px;
+                cursor:pointer; padding:2px 6px; border-radius:4px; transition: all 0.2s;
+            ">✕</button>
+        `;
+        dialogContainer.appendChild(dragHeader);
+
+        // 拖拽逻辑
+        let isDragging = false, dragX = 0, dragY = 0;
+        dragHeader.addEventListener('mousedown', (e) => {
+            if (e.target.tagName === 'BUTTON') return;
+            isDragging = true;
+            dragX = e.clientX - dialogContainer.offsetLeft;
+            dragY = e.clientY - dialogContainer.offsetTop;
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            dialogContainer.style.left = (e.clientX - dragX) + 'px';
+            dialogContainer.style.top = (e.clientY - dragY) + 'px';
+            dialogContainer.style.right = 'auto';
+        });
+        document.addEventListener('mouseup', () => { isDragging = false; });
+
+        // 内容区域
         const dialog = document.createElement('div');
         dialog.id = '__dialog-box';
         dialog.style.cssText = `
-            background: #1e1e2e;
-            border-radius: 16px;
-            padding: 28px;
-            width: 560px;
-            max-width: 92vw;
-            max-height: 88vh;
+            padding: 18px 20px;
             overflow-y: auto;
-            box-shadow: 0 24px 80px rgba(0,0,0,0.4);
-            color: #cdd6f4;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            animation: __dialogSlideUp 0.3s cubic-bezier(0.4,0,0.2,1);
+            max-height: calc(85vh - 52px);
         `;
 
         // 元素预览
@@ -76,19 +104,6 @@
         ).join('');
 
         dialog.innerHTML = `
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
-                <h3 style="margin:0; font-size:18px; color:#cba6f7; font-weight:600;">
-                    ✏️ 修改元素
-                </h3>
-                <button id="__dialog-close" style="
-                    background:none; border:none; color:#6c7086; font-size:22px;
-                    cursor:pointer; padding:4px 8px; border-radius:6px;
-                    transition: all 0.2s;
-                " onmouseenter="this.style.background='#313244';this.style.color='#cdd6f4'"
-                   onmouseleave="this.style.background='none';this.style.color='#6c7086'"
-                >✕</button>
-            </div>
-
             <!-- 选中元素预览 -->
             <div style="
                 background: #313244; border-radius:10px; padding:14px;
@@ -193,11 +208,6 @@
         // 关闭
         document.getElementById('__dialog-close').addEventListener('click', closeDialog);
         document.getElementById('__dialog-cancel').addEventListener('click', closeDialog);
-
-        // 点击遮罩关闭
-        dialogContainer.addEventListener('click', (e) => {
-            if (e.target === dialogContainer) closeDialog();
-        });
 
         // ESC 关闭
         const escHandler = (e) => {
